@@ -1,27 +1,32 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
+import pandas_market_calendars as mcal
 
 import config
 from data.alpaca_client import fetch_stock_bars, fetch_crypto_bars
 from data.db import load_all_bars, load_symbols, bars_last_date
+
+_nyse = mcal.get_calendar("NYSE")
+
+
+def _last_trading_date() -> str:
+    """Return the most recent NYSE trading day as an ISO date string."""
+    today = date.today()
+    schedule = _nyse.schedule(
+        start_date=(today - timedelta(days=10)).isoformat(),
+        end_date=today.isoformat(),
+    )
+    if schedule.empty:
+        return today.isoformat()
+    return schedule.index[-1].date().isoformat()
 
 
 def _cache_is_fresh() -> bool:
     last = bars_last_date()
     if not last:
         return False
-    today = date.today().isoformat()
-    # Accept yesterday's data on weekends or before market close
-    return last >= today or (today > last and _is_recent_trading_day(last))
-
-
-def _is_recent_trading_day(date_str: str) -> bool:
-    from datetime import datetime, timedelta
-    d = datetime.fromisoformat(date_str).date()
-    today = date.today()
-    # Accept if within last 3 calendar days (covers weekends + holidays)
-    return (today - d).days <= 3
+    return last >= _last_trading_date()
 
 
 def get_stock_data(symbols: list[str] | None = None) -> dict[str, pd.DataFrame]:

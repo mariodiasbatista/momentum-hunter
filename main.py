@@ -1,8 +1,10 @@
 import argparse
 import time
+from datetime import date
 
 import config  # noqa: F401 — triggers .env load and env var validation early
 from notifier.telegram import send_results
+from data.db import signals_last_computed_date
 
 
 def parse_args():
@@ -47,8 +49,15 @@ def main():
         scan_time = time.time() - t0
         top = candidates[: args.top]
         label = market.capitalize()
+
+        asset_class = "us_equity" if market == "stocks" else "crypto"
+        last_date = signals_last_computed_date(asset_class)
+        stale_warning = None
+        if last_date and last_date < date.today().isoformat():
+            stale_warning = f"Signals from {last_date} — today's ingestion may not have run yet."
+
         print(f"Found {len(candidates)} candidate(s) in {_fmt(scan_time)}, sending top {len(top)} to Telegram...")
-        send_results(top, market_label=label)
+        send_results(top, market_label=label, stale_warning=stale_warning)
         print(f"Telegram notification sent for {label}.")
 
     print(f"\nTotal run time: {_fmt(time.time() - total_start)}")

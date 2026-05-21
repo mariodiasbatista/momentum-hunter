@@ -14,8 +14,18 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_signals(conn: sqlite3.Connection) -> None:
+    """Drop signals table if it uses the old PK (symbol, asset_class) without computed_at."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='signals'"
+    ).fetchone()
+    if row and "computed_at" not in row[0].split("PRIMARY KEY")[-1]:
+        conn.execute("DROP TABLE signals")
+
+
 def init_db() -> None:
     with get_conn() as conn:
+        _migrate_signals(conn)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS assets (
                 symbol       TEXT NOT NULL,
@@ -86,7 +96,7 @@ def init_db() -> None:
                 warnings                 TEXT,
                 trailing_stop_atr_min    REAL,
                 trailing_stop_atr_max    REAL,
-                PRIMARY KEY (symbol, asset_class)
+                PRIMARY KEY (symbol, asset_class, computed_at)
             );
 
             CREATE INDEX IF NOT EXISTS idx_signals_score ON signals (score DESC);
@@ -223,17 +233,52 @@ def save_signals(records: list[dict]) -> None:
             "trailing_stop_atr_max": atr_max,
         })
     df = pd.DataFrame(rows)
+    run_date = rows[0]["computed_at"]
     with get_conn() as conn:
-        conn.execute("DELETE FROM signals WHERE asset_class = ?", (asset_class,))
+        conn.execute(
+            "DELETE FROM signals WHERE asset_class = ? AND computed_at = ?",
+            (asset_class, run_date),
+        )
         df.to_sql("signals", conn, if_exists="append", index=False)
+
+
+def signals_last_computed_date(asset_class: str) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(computed_at) FROM signals WHERE asset_class = ?",
+            (asset_class,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def signal_persistence(asset_class: str, days: int = 5) -> dict[str, int]:
+    """Return how many of the last N run dates each symbol appeared in signals."""
+    with get_conn() as conn:
+        dates = conn.execute(
+            "SELECT DISTINCT computed_at FROM signals WHERE asset_class = ? ORDER BY computed_at DESC LIMIT ?",
+            (asset_class, days),
+        ).fetchall()
+        if not dates:
+            return {}
+        date_list = [d[0] for d in dates]
+        placeholders = ",".join("?" * len(date_list))
+        rows = conn.execute(
+            f"SELECT symbol, COUNT(*) FROM signals WHERE asset_class = ? AND computed_at IN ({placeholders}) GROUP BY symbol",
+            [asset_class] + date_list,
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
 
 
 def load_signals(asset_class: str, min_score: int = 0) -> list[dict]:
     with get_conn() as conn:
         df = pd.read_sql(
-            "SELECT * FROM signals WHERE asset_class = ? AND score >= ? ORDER BY score DESC",
+            """SELECT * FROM signals
+               WHERE asset_class = ?
+                 AND computed_at = (SELECT MAX(computed_at) FROM signals WHERE asset_class = ?)
+                 AND score >= ?
+               ORDER BY score DESC""",
             conn,
-            params=(asset_class, min_score),
+            params=(asset_class, asset_class, min_score),
         )
     if df.empty:
         return []

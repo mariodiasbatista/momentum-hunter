@@ -11,6 +11,13 @@ def _send(text: str) -> None:
     resp.raise_for_status()
 
 
+def send_alert(message: str) -> None:
+    try:
+        _send(f"⚠️ *Momentum Hunter Alert*\n\n{message}")
+    except Exception:
+        pass  # Don't raise — alerts must never crash the caller
+
+
 def _format_candidate(rank: int, c: dict) -> str:
     sym = c["symbol"]
     score = c["score"]
@@ -32,17 +39,20 @@ def _format_candidate(rank: int, c: dict) -> str:
         "ema9_above_ema21": "EMA9>21",
         "rsi_in_range": "RSI",
         "macd_bullish": "MACD",
-        "adx_strong": "ADX",
+        "adx_strong": "ADX★",
         "volume_above_avg": "Volume",
-        "outperforming_spy": "RS>SPY",
+        "outperforming_spy": "RS>SPY★",
     }
     signal_line = " ".join(f"{'✅' if criteria[k] else '❌'}{v}" for k, v in checks.items())
 
     exit_label = "🟢 Trailing Stop" if exit_mode == "trailing_stop" else "🔴 Fixed Take-Profit"
     warn_text = f"\n⚠️ {', '.join(warnings)}" if warnings else ""
 
+    days = c.get("days_in_scan", 1)
+    streak = f" 📅 {days}d streak" if days > 1 else ""
+
     return (
-        f"*#{rank} {sym}* [{market}] — Score {score}/8\n"
+        f"*#{rank} {sym}* [{market}] — Score {score}/10{streak}\n"
         f"Price: `${close:.2f}` | RSI: `{rsi:.1f}` | ADX: `{adx:.1f}` | Vol: `{vol_ratio:.1f}x`\n"
         f"RS: `{rs_ret:+.1f}%` vs SPY `{spy_ret:+.1f}%`\n"
         f"{signal_line}\n"
@@ -50,12 +60,13 @@ def _format_candidate(rank: int, c: dict) -> str:
     )
 
 
-def send_results(candidates: list[dict], market_label: str) -> None:
+def send_results(candidates: list[dict], market_label: str, stale_warning: str | None = None) -> None:
     if not candidates:
         _send(f"🔍 *Momentum Hunter — {market_label}*\n\nNo candidates met the minimum score threshold.")
         return
 
-    header = f"🚀 *Momentum Hunter — {market_label}*\n_{len(candidates)} candidate(s) found_\n\n"
+    stale_line = f"\n⚠️ _{stale_warning}_\n" if stale_warning else ""
+    header = f"🚀 *Momentum Hunter — {market_label}*\n_{len(candidates)} candidate(s) found_{stale_line}\n\n"
     blocks = [_format_candidate(i + 1, c) for i, c in enumerate(candidates)]
 
     # Build messages that stay under Telegram's 4096-char limit

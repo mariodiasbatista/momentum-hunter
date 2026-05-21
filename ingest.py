@@ -103,6 +103,15 @@ def _ingest_stocks() -> None:
     print("[stocks] ── Step 3: Computing signals...")
     t_signals = time.time()
     all_bars = load_all_bars("us_equity")
+
+    # Filter out illiquid symbols before signal computation
+    before = len(all_bars)
+    all_bars = {
+        sym: df for sym, df in all_bars.items()
+        if df["volume"].mean() >= config.MIN_AVG_VOLUME
+    }
+    print(f"[stocks] Volume filter: {len(all_bars)}/{before} symbols passed (min avg {config.MIN_AVG_VOLUME:,}/day).")
+
     # Load SPY separately (not in us_equity assets, but saved to bars)
     from data.db import load_bars
     spy_df = load_bars("SPY")

@@ -6,11 +6,24 @@ from signals.volume import compute_volume
 from signals.relative_strength import compute_relative_strength
 from signals.exit_mode import compute_exit_mode
 
+# adx_strong and outperforming_spy worth 2 points each — max score is 10
+_WEIGHTS = {
+    "above_sma50": 1,
+    "above_sma200": 1,
+    "ema9_above_ema21": 1,
+    "rsi_in_range": 1,
+    "macd_bullish": 1,
+    "adx_strong": 2,
+    "volume_above_avg": 1,
+    "outperforming_spy": 2,
+}
+MAX_SCORE = sum(_WEIGHTS.values())  # 10
+
 
 def score_ticker(df: pd.DataFrame, spy_df: pd.DataFrame) -> dict | None:
     """
     Run all signal modules and return a composite score dict, or None if data is insufficient.
-    Score is out of 8; each criterion = 1 point.
+    Score is out of 10; adx_strong and outperforming_spy each count 2 points.
     """
     if len(df) < 210:
         return None
@@ -35,7 +48,7 @@ def score_ticker(df: pd.DataFrame, spy_df: pd.DataFrame) -> dict | None:
         "outperforming_spy": rs["outperforming_spy"],
     }
 
-    score = sum(1 for v in criteria.values() if v)
+    score = sum(_WEIGHTS[k] for k, v in criteria.items() if v)
 
     return {
         "score": score,

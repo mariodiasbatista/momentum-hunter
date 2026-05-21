@@ -1,11 +1,14 @@
 import config
-from data.db import load_signals, signals_computed_today
+from data.db import load_signals, signals_computed_today, signal_persistence
 
 
 def run_crypto_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
     if signals_computed_today():
         print("Loading pre-computed crypto signals from DB...")
         candidates = load_signals("crypto", min_score=min_score)
+        persistence = signal_persistence("crypto")
+        for c in candidates:
+            c["days_in_scan"] = persistence.get(c["symbol"], 1)
         print(f"Loaded {len(candidates)} candidates from DB.")
         return candidates
 

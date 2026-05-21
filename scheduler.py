@@ -29,8 +29,10 @@ def run_ingest() -> None:
     try:
         ingest.main()
         log.info("=== Ingestion complete ===")
-    except Exception:
+    except Exception as exc:
         log.exception("Ingestion failed")
+        from notifier.telegram import send_alert
+        send_alert(f"Daily ingestion failed: `{exc}`\nCheck `journalctl -u momentum-hunter` for details.")
 
 
 def run_notify() -> None:
@@ -46,6 +48,8 @@ def run_notify() -> None:
         log.warning(result.stderr.strip())
     if result.returncode != 0:
         log.error("Notification run exited with code %d", result.returncode)
+        from notifier.telegram import send_alert
+        send_alert(f"Notification run failed (exit {result.returncode}).\n`{result.stderr.strip()[:500]}`")
     else:
         log.info("=== Notifications sent ===")
 
