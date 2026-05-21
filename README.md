@@ -5,7 +5,7 @@ A Python-based momentum scanner for US equities (S&P 500 + NASDAQ 100) and crypt
 ## Features
 
 - Multi-market scanning: stocks (S&P 500 + NASDAQ 100) and crypto via Alpaca
-- 8-criterion momentum scoring: trend, RSI, MACD, ADX, volume, and relative strength vs SPY
+- Weighted momentum scoring (max 10pts): trend, RSI, MACD, ADX, volume, and relative strength vs SPY
 - Exit mode recommendation per candidate: trailing stop or fixed take-profit
 - Results delivered directly to Telegram with per-signal breakdown
 
@@ -37,22 +37,24 @@ python main.py --market all --top 10 --min-score 5
 |------|---------|-------------|
 | `--market` | `stocks` | Market to scan: `stocks`, `crypto`, `all` |
 | `--top` | `10` | Number of top results to send to Telegram |
-| `--min-score` | `6` | Minimum signal score out of 8 |
+| `--min-score` | `7` | Minimum signal score out of 10 |
 
 ## Screening Criteria (Idea 5)
 
-Each candidate is scored out of 8. A ticker surfaces when it meets at least 6:
+Each candidate is scored out of **10**. ADX and relative strength carry double weight (★) as the strongest predictors of sustained momentum. A ticker surfaces when it reaches at least 7:
 
-| # | Signal | Threshold |
-|---|--------|-----------|
-| 1 | Price > SMA 50 | Short/medium-term bullish |
-| 2 | Price > SMA 200 | Long-term bullish |
-| 3 | EMA 9 > EMA 21 | Short-term momentum trigger |
-| 4 | RSI | 50–70 (strong but not overbought) |
-| 5 | MACD line > signal line & histogram > 0 | Buying pressure building |
-| 6 | ADX > 25 | Confirms real trend strength |
-| 7 | Volume >= 20% above 20-period avg | Breakout participation |
-| 8 | Outperforming SPY (3-month RS) | Leaders, not laggards |
+| # | Signal | Weight | Threshold |
+|---|--------|--------|-----------|
+| 1 | Price > SMA 50 | 1 | Short/medium-term bullish |
+| 2 | Price > SMA 200 | 1 | Long-term bullish |
+| 3 | EMA 9 > EMA 21 | 1 | Short-term momentum trigger |
+| 4 | RSI | 1 | 50–70 (strong but not overbought) |
+| 5 | MACD line > signal line & histogram > 0 | 1 | Buying pressure building |
+| 6 | ADX > 25 ★ | **2** | Confirms real trend strength |
+| 7 | Volume >= 20% above 20-period avg | 1 | Breakout participation |
+| 8 | Outperforming SPY (3-month RS) ★ | **2** | Leaders, not laggards |
+
+Only symbols with average daily volume ≥ 500,000 shares are considered — micro-caps and illiquid tickers are filtered out before signal computation.
 
 ## Exit Mode Logic
 
@@ -114,6 +116,23 @@ To trigger ingestion manually at any time (safe — full replace, idempotent):
 .venv/bin/python ingest.py
 ```
 
+## Testing
+
+The test suite covers all core pipeline logic. No external API calls are made — Alpaca and Telegram are mocked.
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/ -v
+```
+
+| Test file | What it covers |
+|---|---|
+| `test_db.py` | Signal history PK, persistence tracking, same-day dedup, schema migration |
+| `test_scorer.py` | Weighted scoring, `MAX_SCORE=10`, criteria weights, 210-bar minimum |
+| `test_fetcher.py` | NYSE trading calendar, weekend/holiday handling, cache freshness |
+| `test_telegram.py` | `send_alert`, stale warning header, streak badge, message splitting |
+| `test_ingest_volume_filter.py` | Volume threshold boundary and mixed-universe filtering |
+
 ## Project Structure
 
 ```
@@ -135,12 +154,18 @@ momentum-hunter/
 │   ├── volume.py               # Volume vs 20-period average
 │   ├── relative_strength.py    # Return vs SPY / BTC
 │   ├── exit_mode.py            # Trailing stop vs fixed take-profit
-│   └── scorer.py               # Aggregate scorer (0–8)
+│   └── scorer.py               # Aggregate weighted scorer (0–10)
 ├── scanner/
 │   ├── stock_scanner.py        # Equity scan — reads signals from DB
 │   └── crypto_scanner.py       # Crypto scan — reads signals from DB
-└── notifier/
-    └── telegram.py             # Telegram bot notifier
+├── notifier/
+│   └── telegram.py             # Telegram bot notifier
+└── tests/
+    ├── test_db.py
+    ├── test_scorer.py
+    ├── test_fetcher.py
+    ├── test_telegram.py
+    └── test_ingest_volume_filter.py
 ```
 
 ## License
