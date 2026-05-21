@@ -168,6 +168,46 @@ momentum-hunter/
     └── test_ingest_volume_filter.py
 ```
 
+## First Run Results (2026-05-21)
+
+Pipeline stats from the first live ingestion after all improvements were in place:
+
+**Stocks (US Equity)**
+
+| Stage | Count |
+|---|---|
+| Tradable symbols from Alpaca | 12,396 |
+| Passed 500k avg volume filter | 3,674 (30%) |
+| Had sufficient history (210 bars) | 3,540 |
+| Signals computed | 3,540 |
+| Candidates score ≥ 7/10 | 669 |
+
+Score distribution:
+
+| Score | Symbols |
+|---|---|
+| 9/10 | 120 |
+| 8/10 | 372 |
+| 7/10 | 177 |
+| 6/10 | 258 |
+| ≤ 5/10 | 2,613 |
+
+Notable top candidates by relative strength vs SPY (3-month): BKSY (+134%), BW (+127%), AERT (+100%).
+
+Ingestion time: **13m 33s** (bars fetch + signal computation for ~3.5k symbols).
+
+**Crypto**
+
+| Stage | Count |
+|---|---|
+| Pairs from Alpaca | 73 |
+| Had sufficient history | 62 |
+| Candidates score ≥ 7/10 | 0 |
+
+Crypto market was broadly weak on this date — highest score was 6/10 across 4 pairs.
+
+**Notification**: top 10 stock candidates delivered to Telegram in under 1 second from pre-computed signals.
+
 ## License
 
 MIT
