@@ -1,13 +1,16 @@
 import pandas as pd
 
 import config
+from data.db import load_symbols
 from data.fetcher import get_crypto_data
-from data.universe import get_crypto_universe
 from signals.scorer import score_ticker
 
 
 def run_crypto_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
-    pairs = get_crypto_universe()
+    pairs = load_symbols("crypto") or []
+    if not pairs:
+        from data.universe import get_crypto_universe
+        pairs = get_crypto_universe()
     bars = get_crypto_data(pairs)
 
     # Use BTC/USD as the benchmark for relative strength in crypto

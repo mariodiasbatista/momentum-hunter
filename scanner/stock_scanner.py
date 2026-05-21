@@ -1,13 +1,16 @@
 import pandas as pd
 
 import config
-from data.universe import get_stock_universe
+from data.db import load_symbols
 from data.fetcher import get_stock_data
 from signals.scorer import score_ticker
 
 
 def run_stock_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
-    universe = get_stock_universe()
+    universe = load_symbols("us_equity") or []
+    if not universe:
+        from data.universe import get_stock_universe
+        universe = get_stock_universe()
     # Always include SPY so we can compute relative strength
     symbols_to_fetch = sorted(set(universe + ["SPY"]))
 
