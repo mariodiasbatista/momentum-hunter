@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -17,14 +18,14 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS assets (
-                symbol      TEXT NOT NULL,
-                name        TEXT,
-                exchange    TEXT,
-                asset_class TEXT NOT NULL,
-                tradable    INTEGER,
+                symbol       TEXT NOT NULL,
+                name         TEXT,
+                exchange     TEXT,
+                asset_class  TEXT NOT NULL,
+                tradable     INTEGER,
                 fractionable INTEGER,
-                shortable   INTEGER,
-                updated_at  TEXT NOT NULL,
+                shortable    INTEGER,
+                updated_at   TEXT NOT NULL,
                 PRIMARY KEY (symbol, asset_class)
             );
 
@@ -41,6 +42,54 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_bars_symbol ON bars (symbol);
             CREATE INDEX IF NOT EXISTS idx_bars_date   ON bars (date);
+
+            CREATE TABLE IF NOT EXISTS signals (
+                symbol                   TEXT NOT NULL,
+                asset_class              TEXT NOT NULL,
+                computed_at              TEXT NOT NULL,
+                score                    INTEGER,
+                -- criteria flags
+                above_sma50              INTEGER,
+                above_sma200             INTEGER,
+                ema9_above_ema21         INTEGER,
+                rsi_in_range             INTEGER,
+                macd_bullish             INTEGER,
+                adx_strong               INTEGER,
+                volume_above_avg         INTEGER,
+                outperforming_spy        INTEGER,
+                -- trend values
+                last_close               REAL,
+                sma50                    REAL,
+                sma200                   REAL,
+                ema9                     REAL,
+                ema21                    REAL,
+                -- momentum values
+                rsi                      REAL,
+                rsi_overbought           INTEGER,
+                macd_above_signal        INTEGER,
+                macd_histogram_positive  INTEGER,
+                macd_histogram_shrinking INTEGER,
+                adx                      REAL,
+                adx_falling              INTEGER,
+                atr                      REAL,
+                -- volume values
+                volume                   REAL,
+                avg_volume               REAL,
+                volume_ratio             REAL,
+                volume_drying_up         INTEGER,
+                -- relative strength
+                rs_return                REAL,
+                spy_return               REAL,
+                -- exit
+                exit_mode                TEXT,
+                warning_count            INTEGER,
+                warnings                 TEXT,
+                trailing_stop_atr_min    REAL,
+                trailing_stop_atr_max    REAL,
+                PRIMARY KEY (symbol, asset_class)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_signals_score ON signals (score DESC);
 
             CREATE TABLE IF NOT EXISTS ingestion_log (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,10 +148,158 @@ def load_bars(symbol: str) -> pd.DataFrame | None:
     return df if not df.empty else None
 
 
+def load_all_bars(asset_class: str) -> dict[str, pd.DataFrame]:
+    """Load all bars for an asset class in a single query, split by symbol."""
+    with get_conn() as conn:
+        df = pd.read_sql(
+            """SELECT b.symbol, b.date, b.open, b.high, b.low, b.close, b.volume
+               FROM bars b
+               JOIN assets a ON a.symbol = b.symbol AND a.asset_class = ?
+               WHERE a.tradable = 1
+               ORDER BY b.symbol, b.date""",
+            conn,
+            params=(asset_class,),
+            parse_dates=["date"],
+        )
+    if df.empty:
+        return {}
+    result = {}
+    for symbol, group in df.groupby("symbol"):
+        result[symbol] = group.drop(columns="symbol").set_index("date")
+    return result
+
+
 def bars_last_date() -> str | None:
     with get_conn() as conn:
         row = conn.execute("SELECT MAX(date) FROM bars").fetchone()
     return row[0] if row else None
+
+
+# --- Signals ---
+
+def save_signals(records: list[dict]) -> None:
+    if not records:
+        return
+    asset_class = records[0]["asset_class"]
+    rows = []
+    for r in records:
+        atr_min, atr_max = r["exit"]["trailing_stop_atr_range"]
+        rows.append({
+            "symbol": r["symbol"],
+            "asset_class": asset_class,
+            "computed_at": r["computed_at"],
+            "score": r["score"],
+            "above_sma50": int(r["criteria"]["above_sma50"]),
+            "above_sma200": int(r["criteria"]["above_sma200"]),
+            "ema9_above_ema21": int(r["criteria"]["ema9_above_ema21"]),
+            "rsi_in_range": int(r["criteria"]["rsi_in_range"]),
+            "macd_bullish": int(r["criteria"]["macd_bullish"]),
+            "adx_strong": int(r["criteria"]["adx_strong"]),
+            "volume_above_avg": int(r["criteria"]["volume_above_avg"]),
+            "outperforming_spy": int(r["criteria"]["outperforming_spy"]),
+            "last_close": r["trend"]["last_close"],
+            "sma50": r["trend"]["sma50"],
+            "sma200": r["trend"]["sma200"],
+            "ema9": r["trend"]["ema9"],
+            "ema21": r["trend"]["ema21"],
+            "rsi": r["momentum"]["rsi"],
+            "rsi_overbought": int(r["momentum"]["rsi_overbought"]),
+            "macd_above_signal": int(r["momentum"]["macd_above_signal"]),
+            "macd_histogram_positive": int(r["momentum"]["macd_histogram_positive"]),
+            "macd_histogram_shrinking": int(r["momentum"]["macd_histogram_shrinking"]),
+            "adx": r["momentum"]["adx"],
+            "adx_falling": int(r["momentum"]["adx_falling"]),
+            "atr": r["momentum"]["atr"],
+            "volume": r["volume"]["volume"],
+            "avg_volume": r["volume"]["avg_volume"],
+            "volume_ratio": r["volume"]["volume_ratio"],
+            "volume_drying_up": int(r["volume"]["volume_drying_up"]),
+            "rs_return": r["relative_strength"]["rs_return"],
+            "spy_return": r["relative_strength"]["spy_return"],
+            "exit_mode": r["exit"]["exit_mode"],
+            "warning_count": r["exit"]["warning_count"],
+            "warnings": json.dumps(r["exit"]["warnings"]),
+            "trailing_stop_atr_min": atr_min,
+            "trailing_stop_atr_max": atr_max,
+        })
+    df = pd.DataFrame(rows)
+    with get_conn() as conn:
+        conn.execute("DELETE FROM signals WHERE asset_class = ?", (asset_class,))
+        df.to_sql("signals", conn, if_exists="append", index=False)
+
+
+def load_signals(asset_class: str, min_score: int = 0) -> list[dict]:
+    with get_conn() as conn:
+        df = pd.read_sql(
+            "SELECT * FROM signals WHERE asset_class = ? AND score >= ? ORDER BY score DESC",
+            conn,
+            params=(asset_class, min_score),
+        )
+    if df.empty:
+        return []
+
+    results = []
+    for _, row in df.iterrows():
+        results.append({
+            "symbol": row["symbol"],
+            "market": "crypto" if asset_class == "crypto" else "stocks",
+            "score": int(row["score"]),
+            "criteria": {
+                "above_sma50": bool(row["above_sma50"]),
+                "above_sma200": bool(row["above_sma200"]),
+                "ema9_above_ema21": bool(row["ema9_above_ema21"]),
+                "rsi_in_range": bool(row["rsi_in_range"]),
+                "macd_bullish": bool(row["macd_bullish"]),
+                "adx_strong": bool(row["adx_strong"]),
+                "volume_above_avg": bool(row["volume_above_avg"]),
+                "outperforming_spy": bool(row["outperforming_spy"]),
+            },
+            "trend": {
+                "last_close": row["last_close"],
+                "sma50": row["sma50"],
+                "sma200": row["sma200"],
+                "ema9": row["ema9"],
+                "ema21": row["ema21"],
+            },
+            "momentum": {
+                "rsi": row["rsi"],
+                "rsi_overbought": bool(row["rsi_overbought"]),
+                "macd_above_signal": bool(row["macd_above_signal"]),
+                "macd_histogram_positive": bool(row["macd_histogram_positive"]),
+                "macd_histogram_shrinking": bool(row["macd_histogram_shrinking"]),
+                "adx": row["adx"],
+                "adx_falling": bool(row["adx_falling"]),
+                "atr": row["atr"],
+            },
+            "volume": {
+                "volume": row["volume"],
+                "avg_volume": row["avg_volume"],
+                "volume_ratio": row["volume_ratio"],
+                "volume_drying_up": bool(row["volume_drying_up"]),
+            },
+            "relative_strength": {
+                "rs_return": row["rs_return"],
+                "spy_return": row["spy_return"],
+                "outperforming_spy": bool(row["outperforming_spy"]),
+            },
+            "exit": {
+                "exit_mode": row["exit_mode"],
+                "warning_count": int(row["warning_count"]),
+                "warnings": json.loads(row["warnings"]),
+                "trailing_stop_atr_range": (row["trailing_stop_atr_min"], row["trailing_stop_atr_max"]),
+            },
+        })
+    return results
+
+
+def signals_computed_today() -> bool:
+    from datetime import date
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE computed_at >= ?", (today,)
+        ).fetchone()
+    return row[0] > 0
 
 
 # --- Ingestion log ---

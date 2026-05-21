@@ -1,24 +1,30 @@
-import pandas as pd
-
 import config
-from data.db import load_symbols
-from data.fetcher import get_stock_data
-from signals.scorer import score_ticker
+from data.db import load_signals, signals_computed_today
 
 
 def run_stock_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
+    if signals_computed_today():
+        print("Loading pre-computed stock signals from DB...")
+        candidates = load_signals("us_equity", min_score=min_score)
+        print(f"Loaded {len(candidates)} candidates from DB.")
+        return candidates
+
+    # Fallback: compute on the fly if ingestion hasn't run yet today
+    print("Signals not yet computed today — running live scan...")
+    from data.db import load_symbols
+    from data.fetcher import get_stock_data
+    from signals.scorer import score_ticker
+
     universe = load_symbols("us_equity") or []
     if not universe:
         from data.universe import get_stock_universe
         universe = get_stock_universe()
-    # Always include SPY so we can compute relative strength
+
     symbols_to_fetch = sorted(set(universe + ["SPY"]))
-
     bars = get_stock_data(symbols_to_fetch)
-
     spy_df = bars.get("SPY")
     if spy_df is None:
-        raise RuntimeError("Could not fetch SPY data — needed for relative strength calculation.")
+        raise RuntimeError("Could not fetch SPY data.")
 
     candidates = []
     for symbol in universe:

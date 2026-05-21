@@ -1,19 +1,53 @@
 """
-Daily data ingestion — fetches asset universe + OHLCV bars from Alpaca
-and stores them in the local SQLite database.
+Daily data ingestion — runs at 06:00 ET (10:00 UTC) Monday–Friday.
 
-Scheduled to run at 06:00 ET (10:00 UTC) Monday–Friday.
+Steps per market:
+  1. Fetch asset universe from Alpaca → save to assets table (full replace)
+  2. Fetch OHLCV bars from Alpaca    → save to bars table (full replace)
+  3. Compute all signals             → save to signals table (full replace)
+
+After this runs, main.py reads pre-computed signals from DB — near instant.
 """
 import time
 from datetime import datetime, timezone
 
 import config  # noqa: F401 — loads .env early
-from data.db import init_db, save_assets, save_bars, log_ingestion
+from data.db import (
+    init_db, save_assets, save_bars, save_signals,
+    load_all_bars, log_ingestion,
+)
 from data.alpaca_client import fetch_stock_bars, fetch_crypto_bars
+from signals.scorer import score_ticker
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _fmt(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s}s" if m else f"{s}s"
+
+
+def _compute_and_save_signals(all_bars: dict, benchmark_symbol: str, asset_class: str) -> int:
+    benchmark_df = all_bars.get(benchmark_symbol)
+    if benchmark_df is None:
+        print(f"  Warning: benchmark {benchmark_symbol} not found, skipping signal computation.")
+        return 0
+
+    computed_at = datetime.now(timezone.utc).date().isoformat()
+    records = []
+    for symbol, df in all_bars.items():
+        result = score_ticker(df, benchmark_df)
+        if result is None:
+            continue
+        result["symbol"] = symbol
+        result["asset_class"] = asset_class
+        result["computed_at"] = computed_at
+        records.append(result)
+
+    save_signals(records)
+    return len(records)
 
 
 def _ingest_stocks() -> None:
@@ -21,7 +55,7 @@ def _ingest_stocks() -> None:
     from alpaca.trading.requests import GetAssetsRequest
     from alpaca.trading.enums import AssetClass, AssetStatus
 
-    print("[stocks] Fetching asset universe from Alpaca...")
+    print("\n[stocks] ── Step 1: Fetching asset universe...")
     started_at = _now()
     t0 = time.time()
     run_date = datetime.now(timezone.utc).date().isoformat()
@@ -32,7 +66,6 @@ def _ingest_stocks() -> None:
         asset_class=AssetClass.US_EQUITY,
         status=AssetStatus.ACTIVE,
     ))
-
     records = [
         {
             "symbol": a.symbol,
@@ -49,23 +82,39 @@ def _ingest_stocks() -> None:
     ]
     save_assets(records)
     symbols = [r["symbol"] for r in records if r["tradable"]]
-    print(f"[stocks] Saved {len(records)} assets ({len(symbols)} tradable). Fetching bars...")
+    print(f"[stocks] Saved {len(symbols)} tradable symbols.")
 
+    print("[stocks] ── Step 2: Fetching OHLCV bars...")
     bar_count = 0
+    symbols_with_data = []
     chunk_size = 100
-    for i in range(0, len(symbols), chunk_size):
-        chunk = symbols[i : i + chunk_size]
+    # Always include SPY for relative strength benchmark
+    all_symbols = sorted(set(symbols + ["SPY"]))
+    for i in range(0, len(all_symbols), chunk_size):
+        chunk = all_symbols[i : i + chunk_size]
         bars = fetch_stock_bars(chunk, config.BARS_LOOKBACK_DAYS)
         for symbol, df in bars.items():
             save_bars(df, symbol)
             bar_count += len(df)
-        print(f"  [stocks] {min(i + chunk_size, len(symbols))}/{len(symbols)} symbols processed")
+            symbols_with_data.append(symbol)
+        print(f"  {min(i + chunk_size, len(all_symbols))}/{len(all_symbols)} symbols")
+    print(f"[stocks] Saved {bar_count:,} bars for {len(symbols_with_data)} symbols.")
+
+    print("[stocks] ── Step 3: Computing signals...")
+    t_signals = time.time()
+    all_bars = load_all_bars("us_equity")
+    # Load SPY separately (not in us_equity assets, but saved to bars)
+    from data.db import load_bars
+    spy_df = load_bars("SPY")
+    if spy_df is not None:
+        all_bars["SPY"] = spy_df
+    computed = _compute_and_save_signals(all_bars, "SPY", "us_equity")
+    print(f"[stocks] Signals computed for {computed} symbols in {_fmt(time.time() - t_signals)}.")
 
     duration = time.time() - t0
-    completed_at = _now()
-    log_ingestion(run_date, "us_equity", len(symbols), bar_count, duration, "success", started_at, completed_at)
-    m, s = divmod(int(duration), 60)
-    print(f"[stocks] Done — {len(symbols)} symbols, {bar_count:,} bars saved in {m}m {s}s.")
+    log_ingestion(run_date, "us_equity", len(symbols), bar_count, duration,
+                  "success", started_at, _now())
+    print(f"[stocks] ✓ Complete in {_fmt(duration)}.")
 
 
 def _ingest_crypto() -> None:
@@ -73,7 +122,7 @@ def _ingest_crypto() -> None:
     from alpaca.trading.requests import GetAssetsRequest
     from alpaca.trading.enums import AssetClass, AssetStatus
 
-    print("[crypto] Fetching asset universe from Alpaca...")
+    print("\n[crypto] ── Step 1: Fetching asset universe...")
     started_at = _now()
     t0 = time.time()
     run_date = datetime.now(timezone.utc).date().isoformat()
@@ -84,7 +133,6 @@ def _ingest_crypto() -> None:
         asset_class=AssetClass.CRYPTO,
         status=AssetStatus.ACTIVE,
     ))
-
     records = [
         {
             "symbol": a.symbol,
@@ -101,19 +149,26 @@ def _ingest_crypto() -> None:
     ]
     save_assets(records)
     symbols = [r["symbol"] for r in records]
-    print(f"[crypto] Saved {len(symbols)} pairs. Fetching bars...")
+    print(f"[crypto] Saved {len(symbols)} pairs.")
 
+    print("[crypto] ── Step 2: Fetching OHLCV bars...")
     bars = fetch_crypto_bars(symbols, config.BARS_LOOKBACK_DAYS)
     bar_count = 0
     for symbol, df in bars.items():
         save_bars(df, symbol)
         bar_count += len(df)
+    print(f"[crypto] Saved {bar_count:,} bars for {len(bars)} pairs.")
+
+    print("[crypto] ── Step 3: Computing signals...")
+    t_signals = time.time()
+    all_bars = load_all_bars("crypto")
+    computed = _compute_and_save_signals(all_bars, "BTC/USD", "crypto")
+    print(f"[crypto] Signals computed for {computed} pairs in {_fmt(time.time() - t_signals)}.")
 
     duration = time.time() - t0
-    completed_at = _now()
-    log_ingestion(run_date, "crypto", len(symbols), bar_count, duration, "success", started_at, completed_at)
-    m, s = divmod(int(duration), 60)
-    print(f"[crypto] Done — {len(symbols)} pairs, {bar_count:,} bars saved in {m}m {s}s.")
+    log_ingestion(run_date, "crypto", len(symbols), bar_count, duration,
+                  "success", started_at, _now())
+    print(f"[crypto] ✓ Complete in {_fmt(duration)}.")
 
 
 def main() -> None:
@@ -121,7 +176,7 @@ def main() -> None:
     init_db()
     _ingest_stocks()
     _ingest_crypto()
-    print("=== Ingestion complete ===")
+    print("\n=== Ingestion complete ===")
 
 
 if __name__ == "__main__":

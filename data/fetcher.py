@@ -4,7 +4,7 @@ import pandas as pd
 
 import config
 from data.alpaca_client import fetch_stock_bars, fetch_crypto_bars
-from data.db import load_bars, load_symbols, bars_last_date
+from data.db import load_all_bars, load_symbols, bars_last_date
 
 
 def _cache_is_fresh() -> bool:
@@ -27,12 +27,7 @@ def _is_recent_trading_day(date_str: str) -> bool:
 def get_stock_data(symbols: list[str] | None = None) -> dict[str, pd.DataFrame]:
     if _cache_is_fresh():
         print("Loading stock bars from cache...")
-        syms = symbols or load_symbols("us_equity")
-        result = {}
-        for sym in syms:
-            df = load_bars(sym)
-            if df is not None:
-                result[sym] = df
+        result = load_all_bars("us_equity")
         print(f"Loaded {len(result)} symbols from cache.")
         return result
 
@@ -54,12 +49,7 @@ def get_stock_data(symbols: list[str] | None = None) -> dict[str, pd.DataFrame]:
 def get_crypto_data(pairs: list[str] | None = None) -> dict[str, pd.DataFrame]:
     if _cache_is_fresh():
         print("Loading crypto bars from cache...")
-        syms = pairs or load_symbols("crypto")
-        result = {}
-        for sym in syms:
-            df = load_bars(sym)
-            if df is not None:
-                result[sym] = df
+        result = load_all_bars("crypto")
         print(f"Loaded {len(result)} pairs from cache.")
         return result
 
