@@ -31,8 +31,8 @@ VOLUME_PERIOD = 20
 VOLUME_MULTIPLIER = 1.2  # volume must be >= 20% above avg
 RS_LOOKBACK_DAYS = 63    # ~3 months relative strength vs SPY
 
-# Minimum weighted score to surface a candidate (out of 10: adx_strong and outperforming_spy worth 2 each)
-MIN_SCORE = 7
+# Minimum score to surface a candidate (out of 8, equal weights)
+MIN_SCORE = 6
 
 # Minimum average daily volume to include a symbol in signal computation
 MIN_AVG_VOLUME = 500_000

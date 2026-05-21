@@ -39,9 +39,9 @@ def _format_candidate(rank: int, c: dict) -> str:
         "ema9_above_ema21": "EMA9>21",
         "rsi_in_range": "RSI",
         "macd_bullish": "MACD",
-        "adx_strong": "ADX★",
+        "adx_strong": "ADX",
         "volume_above_avg": "Volume",
-        "outperforming_spy": "RS>SPY★",
+        "outperforming_spy": "RS>SPY",
     }
     signal_line = " ".join(f"{'✅' if criteria[k] else '❌'}{v}" for k, v in checks.items())
 
@@ -52,7 +52,7 @@ def _format_candidate(rank: int, c: dict) -> str:
     streak = f" 📅 {days}d streak" if days > 1 else ""
 
     return (
-        f"*#{rank} {sym}* [{market}] — Score {score}/10{streak}\n"
+        f"*#{rank} {sym}* [{market}] — Score {score}/8{streak}\n"
         f"Price: `${close:.2f}` | RSI: `{rsi:.1f}` | ADX: `{adx:.1f}` | Vol: `{vol_ratio:.1f}x`\n"
         f"RS: `{rs_ret:+.1f}%` vs SPY `{spy_ret:+.1f}%`\n"
         f"{signal_line}\n"
