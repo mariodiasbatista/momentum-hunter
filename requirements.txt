@@ -7,3 +7,4 @@ requests>=2.31.0
 lxml>=5.0.0
 apscheduler>=3.10.0
 pandas-market-calendars>=4.0
+pytest>=8.0.0
