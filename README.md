@@ -61,28 +61,84 @@ Each candidate is scored out of 8. A ticker surfaces when it meets at least 6:
 
 Warning signs monitored: RSI overbought, ADX falling, volume drying up, MACD histogram shrinking.
 
+## Architecture & Data Flow
+
+The pipeline is split into two decoupled processes:
+
+### 1. Daily Ingestion (`ingest.py`)
+
+Runs once per day after market close. Heavy — takes 7–20 minutes for the full stock universe.
+
+```
+ingest.py
+ ├── [stocks] Fetch ~12,400 tradable US equity assets from Alpaca → assets table
+ ├── [stocks] Fetch OHLCV bars in chunks of 100 → bars table (+ SPY as benchmark)
+ ├── [stocks] score_ticker() × ~12,400 symbols → signals table
+ ├── [crypto] Fetch ~73 tradable crypto pairs from Alpaca → assets table
+ ├── [crypto] Fetch OHLCV bars → bars table (BTC/USD as benchmark)
+ └── [crypto] score_ticker() × ~73 pairs → signals table
+```
+
+`score_ticker()` requires at least 210 bars per symbol (≈ SMA 200 minimum). Symbols below that threshold are skipped. Signals are always computed from the same batch of bars saved in the same run — the DB is always internally consistent.
+
+### 2. Notification (`main.py`)
+
+Reads pre-computed signals from the DB — near instant. No recalculation.
+
+```
+main.py
+ └── load_signals() from SQLite → filter by min_score → send top N to Telegram
+```
+
+### Scheduling (`scheduler.py`)
+
+A long-running APScheduler process fires both jobs Mon–Fri on a cron trigger:
+
+| Time (UTC) | Job | Why |
+|---|---|---|
+| 21:30 | `ingest.py` | 30 min after US market close (4pm ET) — bars are final |
+| 22:00 | `main.py --market all` | After ingest has time to complete |
+
+Managed as a systemd service (`momentum-hunter.service`) — starts on boot, restarts on failure.
+
+```bash
+# Service management
+systemctl status momentum-hunter
+systemctl restart momentum-hunter
+journalctl -u momentum-hunter -f
+```
+
+To trigger ingestion manually at any time (safe — full replace, idempotent):
+
+```bash
+.venv/bin/python ingest.py
+```
+
 ## Project Structure
 
 ```
 momentum-hunter/
-├── main.py                     # CLI entry point
+├── main.py                     # CLI entry point — reads signals from DB, sends Telegram
+├── ingest.py                   # Daily ingestion — fetches bars, computes all signals
+├── scheduler.py                # APScheduler service — fires ingest + notify Mon–Fri
 ├── config.py                   # Thresholds and .env loading
 ├── requirements.txt
 ├── .env.example                # API keys template
 ├── data/
+│   ├── db.py                   # SQLite schema + all read/write helpers
 │   ├── alpaca_client.py        # Alpaca REST client (stocks + crypto)
-│   ├── universe.py             # S&P 500 + NASDAQ 100 tickers; crypto pairs
-│   └── fetcher.py              # Batch OHLCV fetch
+│   ├── universe.py             # Asset universe helpers
+│   └── fetcher.py              # Cache-aware OHLCV loader
 ├── signals/
 │   ├── trend.py                # SMA 50/200, EMA 9/21
 │   ├── momentum.py             # RSI, MACD, ADX, ATR
 │   ├── volume.py               # Volume vs 20-period average
-│   ├── relative_strength.py    # Return vs SPY
+│   ├── relative_strength.py    # Return vs SPY / BTC
 │   ├── exit_mode.py            # Trailing stop vs fixed take-profit
 │   └── scorer.py               # Aggregate scorer (0–8)
 ├── scanner/
-│   ├── stock_scanner.py        # Equity scan pipeline
-│   └── crypto_scanner.py       # Crypto scan pipeline
+│   ├── stock_scanner.py        # Equity scan — reads signals from DB
+│   └── crypto_scanner.py       # Crypto scan — reads signals from DB
 └── notifier/
     └── telegram.py             # Telegram bot notifier
 ```
