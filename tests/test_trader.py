@@ -33,17 +33,17 @@ class TestIsTransient:
     def test_invalid_symbol_is_not_transient(self):
         assert not is_transient(Exception("asset not found"))
 
-    def test_log_api_error_warns_on_transient(self, caplog):
-        import logging
-        with caplog.at_level(logging.WARNING):
-            log_api_error(logging.getLogger("test"), "fetch failed", Exception("connection refused"))
-        assert any(r.levelno == logging.WARNING for r in caplog.records)
+    def test_log_api_error_warns_on_transient(self):
+        mock_log = MagicMock()
+        log_api_error(mock_log, "fetch failed", Exception("connection refused"))
+        mock_log.warning.assert_called_once()
+        mock_log.error.assert_not_called()
 
-    def test_log_api_error_errors_on_real_failure(self, caplog):
-        import logging
-        with caplog.at_level(logging.ERROR):
-            log_api_error(logging.getLogger("test"), "fetch failed", Exception("403 forbidden"))
-        assert any(r.levelno == logging.ERROR for r in caplog.records)
+    def test_log_api_error_errors_on_real_failure(self):
+        mock_log = MagicMock()
+        log_api_error(mock_log, "fetch failed", Exception("403 forbidden"))
+        mock_log.error.assert_called_once()
+        mock_log.warning.assert_not_called()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
