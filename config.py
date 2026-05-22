@@ -52,6 +52,12 @@ POSITION_MULTIPLIER = 3
 # Auto-order: how many top candidates to place orders for each morning
 AUTO_ORDER_TOP_N = 10
 
+# Cooldown: a stock bought within this many calendar days cannot be re-bought
+# 0 = no cooldown (only today's dedup applies)
+# 1 = skip yesterday's buys (default — increases daily variety)
+# 5 = skip anything bought in the last 5 days
+ORDER_COOLDOWN_DAYS = 1
+
 # Priority tiebreaker sort order for equal-score candidates:
 # primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
 PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]

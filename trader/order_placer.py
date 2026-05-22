@@ -13,7 +13,7 @@ Buy rules (Execution v1 — 2026-05-22):
 """
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import config
@@ -58,6 +58,28 @@ def _orders_today() -> set:
         return set(day.keys()) if isinstance(day, dict) else set(day)
     except Exception:
         return set()
+
+
+def _symbols_in_cooldown() -> set:
+    """
+    Return symbols bought within the last ORDER_COOLDOWN_DAYS calendar days (excluding today).
+    Prevents re-buying the same stock on consecutive days and increases portfolio variety.
+    Set ORDER_COOLDOWN_DAYS = 0 to disable.
+    """
+    if config.ORDER_COOLDOWN_DAYS <= 0:
+        return set()
+    today = date.today()
+    cooldown = set()
+    try:
+        data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
+        for date_str, day_data in data.items():
+            days_ago = (today - date.fromisoformat(date_str)).days
+            if 1 <= days_ago <= config.ORDER_COOLDOWN_DAYS:
+                symbols = day_data.keys() if isinstance(day_data, dict) else day_data
+                cooldown.update(symbols)
+    except Exception:
+        pass
+    return cooldown
 
 
 def load_orders_today() -> dict:
@@ -109,6 +131,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
     client = _get_client()
     already_ordered = _orders_today()
+    in_cooldown = _symbols_in_cooldown()
     placed = []
 
     # Respect pre-market filter if validator ran this morning
@@ -118,6 +141,10 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.info("[orders] Pre-market filter active: %d approved symbol(s)", len(approved))
     else:
         log.info("[orders] No pre-market filter — using full candidate list")
+
+    if in_cooldown:
+        log.info("[orders] Cooldown (%dd): skipping %s",
+                 config.ORDER_COOLDOWN_DAYS, ", ".join(sorted(in_cooldown)))
 
     log.info("[orders] Starting — %d candidates, %d already ordered today",
              len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
@@ -131,6 +158,10 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
         if approved is not None and symbol not in approved:
             log.info("[orders] Skip %s — failed pre-market validation", symbol)
+            continue
+
+        if symbol in in_cooldown:
+            log.info("[orders] Skip %s — cooldown (%dd)", symbol, config.ORDER_COOLDOWN_DAYS)
             continue
 
         price      = c["trend"]["last_close"]

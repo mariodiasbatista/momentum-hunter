@@ -160,6 +160,58 @@ class TestPositionSizing:
 
 # ── place_orders ─────────────────────────────────────────────────────────────
 
+class TestCooldown:
+    def _write_orders(self, tmp_path, days_ago: int, symbols: list):
+        from datetime import date, timedelta
+        d = (date.today() - timedelta(days=days_ago)).isoformat()
+        data = {d: {s: {"qty": 10, "entry_price": 100.0} for s in symbols}}
+        (tmp_path / "orders.json").write_text(json.dumps(data))
+
+    def test_symbols_bought_yesterday_in_cooldown(self, tmp_path):
+        self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
+        with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
+             patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
+            from trader.order_placer import _symbols_in_cooldown
+            assert "AAPL" in _symbols_in_cooldown()
+
+    def test_symbols_bought_today_not_in_cooldown(self, tmp_path):
+        self._write_orders(tmp_path, days_ago=0, symbols=["AAPL"])
+        with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
+             patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
+            from trader.order_placer import _symbols_in_cooldown
+            assert "AAPL" not in _symbols_in_cooldown()  # today handled by _orders_today()
+
+    def test_symbols_outside_cooldown_window_not_blocked(self, tmp_path):
+        self._write_orders(tmp_path, days_ago=3, symbols=["AAPL"])
+        with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
+             patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
+            from trader.order_placer import _symbols_in_cooldown
+            assert "AAPL" not in _symbols_in_cooldown()
+
+    def test_zero_cooldown_returns_empty(self, tmp_path):
+        self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
+        with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
+             patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 0):
+            from trader.order_placer import _symbols_in_cooldown
+            assert _symbols_in_cooldown() == set()
+
+    def test_place_orders_skips_cooldown_symbol(self, tmp_path):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        orders_file = tmp_path / "orders.json"
+        orders_file.write_text(json.dumps({yesterday: {"AAPL": {"qty": 10, "entry_price": 100.0}}}))
+        mock_client = MagicMock()
+        mock_client.submit_order.return_value = _mock_order()
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", orders_file), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(symbol="AAPL")])
+        assert len(placed) == 0
+        mock_client.submit_order.assert_not_called()
+
+
 class TestPlaceOrders:
     def _run(self, candidates, already_ordered=None, orders_file=None):
         mock_client = MagicMock()
