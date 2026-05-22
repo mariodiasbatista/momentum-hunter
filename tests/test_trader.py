@@ -167,56 +167,46 @@ class TestCooldown:
         data = {d: {s: {"qty": 10, "entry_price": 100.0} for s in symbols}}
         (tmp_path / "orders.json").write_text(json.dumps(data))
 
-    def test_symbols_bought_yesterday_in_cooldown(self, tmp_path):
+    def test_open_position_within_cooldown_is_blocked(self, tmp_path):
         self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
-            from trader.order_placer import _symbols_in_cooldown
-            assert "AAPL" in _symbols_in_cooldown()
+            from trader.order_placer import _open_positions_in_cooldown
+            assert "AAPL" in _open_positions_in_cooldown({"AAPL"})
 
-    def test_symbols_bought_today_not_in_cooldown(self, tmp_path):
-        self._write_orders(tmp_path, days_ago=0, symbols=["AAPL"])
+    def test_closed_position_not_blocked_even_within_cooldown(self, tmp_path):
+        # AAPL bought yesterday but position is now closed — not in open_symbols
+        self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
-            from trader.order_placer import _symbols_in_cooldown
-            assert "AAPL" not in _symbols_in_cooldown()  # today handled by _orders_today()
+            from trader.order_placer import _open_positions_in_cooldown
+            assert "AAPL" not in _open_positions_in_cooldown(set())  # not open
 
-    def test_symbols_outside_cooldown_window_not_blocked(self, tmp_path):
+    def test_open_position_older_than_cooldown_not_blocked(self, tmp_path):
+        # AAPL bought 3 days ago, cooldown=1 — still open but outside window
         self._write_orders(tmp_path, days_ago=3, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
-            from trader.order_placer import _symbols_in_cooldown
-            assert "AAPL" not in _symbols_in_cooldown()
+            from trader.order_placer import _open_positions_in_cooldown
+            assert "AAPL" not in _open_positions_in_cooldown({"AAPL"})
 
-    def test_zero_cooldown_returns_empty(self, tmp_path):
+    def test_zero_cooldown_never_blocks(self, tmp_path):
         self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 0):
-            from trader.order_placer import _symbols_in_cooldown
-            assert _symbols_in_cooldown() == set()
+            from trader.order_placer import _open_positions_in_cooldown
+            assert _open_positions_in_cooldown({"AAPL"}) == set()
 
-    def test_place_orders_skips_open_position(self, tmp_path):
+    def test_place_orders_skips_open_position_in_cooldown(self, tmp_path):
+        from datetime import date, timedelta
+        today = date.today().isoformat()
+        orders_file = tmp_path / "orders.json"
+        orders_file.write_text(json.dumps({today: {"AAPL": {"qty": 10, "entry_price": 100.0}}}))
         mock_client = MagicMock()
         mock_client.submit_order.return_value = _mock_order()
         mock_pos = MagicMock()
         mock_pos.symbol = "AAPL"
         mock_client.get_all_positions.return_value = [mock_pos]
-        with patch("trader.order_placer._get_client", return_value=mock_client), \
-             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
-             patch("trader.order_placer._record_order"), \
-             patch("trader.premarket_validator.load_approved_today", return_value=None):
-            from trader.order_placer import place_orders
-            placed = place_orders([_candidate(symbol="AAPL")])
-        assert len(placed) == 0
-        mock_client.submit_order.assert_not_called()
-
-    def test_place_orders_skips_cooldown_symbol(self, tmp_path):
-        from datetime import date, timedelta
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        orders_file = tmp_path / "orders.json"
-        orders_file.write_text(json.dumps({yesterday: {"AAPL": {"qty": 10, "entry_price": 100.0}}}))
-        mock_client = MagicMock()
-        mock_client.submit_order.return_value = _mock_order()
         with patch("trader.order_placer._get_client", return_value=mock_client), \
              patch("trader.order_placer._ORDERS_FILE", orders_file), \
              patch("trader.order_placer._record_order"), \
@@ -225,6 +215,25 @@ class TestCooldown:
             placed = place_orders([_candidate(symbol="AAPL")])
         assert len(placed) == 0
         mock_client.submit_order.assert_not_called()
+
+    def test_place_orders_allows_old_open_position_outside_cooldown(self, tmp_path):
+        from datetime import date, timedelta
+        # Bought 5 days ago, cooldown=1 — outside window, should be allowed
+        old_date = (date.today() - timedelta(days=5)).isoformat()
+        orders_file = tmp_path / "orders.json"
+        orders_file.write_text(json.dumps({old_date: {"AAPL": {"qty": 10, "entry_price": 100.0}}}))
+        mock_client = MagicMock()
+        mock_client.submit_order.return_value = _mock_order()
+        mock_pos = MagicMock()
+        mock_pos.symbol = "AAPL"
+        mock_client.get_all_positions.return_value = [mock_pos]
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", orders_file), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(symbol="AAPL")])
+        assert len(placed) == 1
 
 
 class TestPlaceOrders:

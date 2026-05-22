@@ -60,26 +60,30 @@ def _orders_today() -> set:
         return set()
 
 
-def _symbols_in_cooldown() -> set:
+def _open_positions_in_cooldown(open_symbols: set) -> set:
     """
-    Return symbols bought within the last ORDER_COOLDOWN_DAYS calendar days (excluding today).
-    Prevents re-buying the same stock on consecutive days and increases portfolio variety.
+    Return symbols that are:
+      - currently held as an open position, AND
+      - were bought within ORDER_COOLDOWN_DAYS calendar days (including today)
+
+    Closed positions are never blocked — exited = free to re-enter.
+    Positions older than ORDER_COOLDOWN_DAYS are not blocked either.
     Set ORDER_COOLDOWN_DAYS = 0 to disable.
     """
-    if config.ORDER_COOLDOWN_DAYS <= 0:
+    if config.ORDER_COOLDOWN_DAYS <= 0 or not open_symbols:
         return set()
     today = date.today()
-    cooldown = set()
+    blocked = set()
     try:
         data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
         for date_str, day_data in data.items():
             days_ago = (today - date.fromisoformat(date_str)).days
-            if 1 <= days_ago <= config.ORDER_COOLDOWN_DAYS:
+            if 0 <= days_ago <= config.ORDER_COOLDOWN_DAYS:
                 symbols = day_data.keys() if isinstance(day_data, dict) else day_data
-                cooldown.update(symbols)
+                blocked.update(sym for sym in symbols if sym in open_symbols)
     except Exception:
         pass
-    return cooldown
+    return blocked
 
 
 def load_orders_today() -> dict:
@@ -131,15 +135,15 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
     client = _get_client()
     already_ordered = _orders_today()
-    in_cooldown = _symbols_in_cooldown()
 
-    # Skip symbols with an existing open position — never double-buy
+    # Fetch open positions, then apply cooldown only to those within the window
     try:
-        open_positions = {p.symbol for p in client.get_all_positions()}
+        open_symbols = {p.symbol for p in client.get_all_positions()}
     except Exception as exc:
-        log.warning("[orders] Could not fetch open positions for dedup check: %s", exc)
-        open_positions = set()
+        log.warning("[orders] Could not fetch open positions: %s", exc)
+        open_symbols = set()
 
+    in_cooldown = _open_positions_in_cooldown(open_symbols)
     placed = []
 
     # Respect pre-market filter if validator ran this morning
@@ -151,11 +155,8 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.info("[orders] No pre-market filter — using full candidate list")
 
     if in_cooldown:
-        log.info("[orders] Cooldown (%dd): skipping %s",
+        log.info("[orders] Cooldown (%dd, open positions): skipping %s",
                  config.ORDER_COOLDOWN_DAYS, ", ".join(sorted(in_cooldown)))
-
-    if open_positions:
-        log.info("[orders] Open positions (will skip): %s", ", ".join(sorted(open_positions)))
 
     log.info("[orders] Starting — %d candidates, %d already ordered today",
              len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
@@ -171,12 +172,8 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             log.info("[orders] Skip %s — failed pre-market validation", symbol)
             continue
 
-        if symbol in open_positions:
-            log.info("[orders] Skip %s — position already open", symbol)
-            continue
-
         if symbol in in_cooldown:
-            log.info("[orders] Skip %s — cooldown (%dd)", symbol, config.ORDER_COOLDOWN_DAYS)
+            log.info("[orders] Skip %s — open position within %dd cooldown", symbol, config.ORDER_COOLDOWN_DAYS)
             continue
 
         price      = c["trend"]["last_close"]
