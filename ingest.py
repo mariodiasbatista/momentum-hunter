@@ -8,6 +8,7 @@ Steps per market:
 
 After this runs, main.py reads pre-computed signals from DB — near instant.
 """
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -18,6 +19,8 @@ from data.db import (
 )
 from data.alpaca_client import fetch_stock_bars, fetch_crypto_bars
 from signals.scorer import score_ticker
+
+log = logging.getLogger("ingest")
 
 
 def _now() -> str:
@@ -82,6 +85,7 @@ def _ingest_stocks() -> None:
     ]
     save_assets(records)
     symbols = [r["symbol"] for r in records if r["tradable"]]
+    log.info("[stocks] Universe: %d symbols fetched", len(symbols))
     print(f"[stocks] Saved {len(symbols)} tradable symbols.")
 
     print("[stocks] ── Step 2: Fetching OHLCV bars...")
@@ -98,6 +102,7 @@ def _ingest_stocks() -> None:
             bar_count += len(df)
             symbols_with_data.append(symbol)
         print(f"  {min(i + chunk_size, len(all_symbols))}/{len(all_symbols)} symbols")
+    log.info("[stocks] Bars: %s rows for %d symbols", f"{bar_count:,}", len(symbols_with_data))
     print(f"[stocks] Saved {bar_count:,} bars for {len(symbols_with_data)} symbols.")
 
     print("[stocks] ── Step 3: Computing signals...")
@@ -110,6 +115,7 @@ def _ingest_stocks() -> None:
         sym: df for sym, df in all_bars.items()
         if df["volume"].mean() >= config.MIN_AVG_VOLUME
     }
+    log.info("[stocks] Volume filter: %d / %d passed (≥%s avg vol)", len(all_bars), before, f"{config.MIN_AVG_VOLUME:,}")
     print(f"[stocks] Volume filter: {len(all_bars)}/{before} symbols passed (min avg {config.MIN_AVG_VOLUME:,}/day).")
 
     # Load SPY separately (not in us_equity assets, but saved to bars)
@@ -118,11 +124,13 @@ def _ingest_stocks() -> None:
     if spy_df is not None:
         all_bars["SPY"] = spy_df
     computed = _compute_and_save_signals(all_bars, "SPY", "us_equity")
+    log.info("[stocks] Signals: %d scored in %s", computed, _fmt(time.time() - t_signals))
     print(f"[stocks] Signals computed for {computed} symbols in {_fmt(time.time() - t_signals)}.")
 
     duration = time.time() - t0
     log_ingestion(run_date, "us_equity", len(symbols), bar_count, duration,
                   "success", started_at, _now())
+    log.info("[stocks] Complete in %s", _fmt(duration))
     print(f"[stocks] ✓ Complete in {_fmt(duration)}.")
 
 
@@ -158,6 +166,7 @@ def _ingest_crypto() -> None:
     ]
     save_assets(records)
     symbols = [r["symbol"] for r in records]
+    log.info("[crypto] Universe: %d pairs fetched", len(symbols))
     print(f"[crypto] Saved {len(symbols)} pairs.")
 
     print("[crypto] ── Step 2: Fetching OHLCV bars...")
@@ -166,25 +175,39 @@ def _ingest_crypto() -> None:
     for symbol, df in bars.items():
         save_bars(df, symbol)
         bar_count += len(df)
+    log.info("[crypto] Bars: %s rows for %d pairs", f"{bar_count:,}", len(bars))
     print(f"[crypto] Saved {bar_count:,} bars for {len(bars)} pairs.")
 
     print("[crypto] ── Step 3: Computing signals...")
     t_signals = time.time()
     all_bars = load_all_bars("crypto")
     computed = _compute_and_save_signals(all_bars, "BTC/USD", "crypto")
+    log.info("[crypto] Signals: %d scored in %s", computed, _fmt(time.time() - t_signals))
     print(f"[crypto] Signals computed for {computed} pairs in {_fmt(time.time() - t_signals)}.")
 
     duration = time.time() - t0
     log_ingestion(run_date, "crypto", len(symbols), bar_count, duration,
                   "success", started_at, _now())
+    log.info("[crypto] Complete in %s", _fmt(duration))
     print(f"[crypto] ✓ Complete in {_fmt(duration)}.")
 
 
 def main() -> None:
+    t_total = time.time()
+    log.info("Alpaca Pull started")
     print(f"=== Momentum Hunter — Daily Ingestion [{_now()}] ===")
     init_db()
-    _ingest_stocks()
-    _ingest_crypto()
+    try:
+        _ingest_stocks()
+    except Exception as exc:
+        log.error("Stocks ingestion failed: %s", exc)
+        raise
+    try:
+        _ingest_crypto()
+    except Exception as exc:
+        log.error("Crypto ingestion failed: %s", exc)
+        raise
+    log.info("Alpaca Pull complete — total %s", _fmt(time.time() - t_total))
     print("\n=== Ingestion complete ===")
 
 

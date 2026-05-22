@@ -4,8 +4,8 @@ A Python-based momentum scanner for US equities (S&P 500 + NASDAQ 100) and crypt
 
 ## Features
 
-- Multi-market scanning: stocks (S&P 500 + NASDAQ 100) and crypto via Alpaca
-- Weighted momentum scoring (max 10pts): trend, RSI, MACD, ADX, volume, and relative strength vs SPY
+- Multi-market scanning: full Alpaca universe (~12,400 US equities) and crypto
+- Equal-weight momentum scoring (8 criteria × 1pt): trend, RSI, MACD, ADX, volume, relative strength vs SPY
 - Exit mode recommendation per candidate: trailing stop or fixed take-profit
 - Results delivered directly to Telegram with per-signal breakdown
 
@@ -39,20 +39,64 @@ python main.py --market all --top 10 --min-score 5
 | `--top` | `10` | Number of top results to send to Telegram |
 | `--min-score` | `7` | Minimum signal score out of 10 |
 
+## Execution Rules (v1 — 2026-05-22)
+
+These rules govern how candidates from the nightly scan are acted on the following trading day.
+
+### Position Sizing
+
+| Condition | Positions | Capital |
+|---|---|---|
+| Price > $50 | 1 position | $250 |
+| Price < $50 | 3 positions | $750 |
+
+Shares bought = `floor(capital / price)`, minimum 1 share.
+
+**Rationale:** Lower-priced stocks in confirmed momentum often have higher percentage upside. 3× allocation matches the risk/reward profile of high-RS, high-volume small caps that meet all 8 criteria.
+
+### Priority Ranking (tiebreaker for equal scores)
+
+When multiple stocks score 8/8, they are ranked by:
+
+1. **RS % vs SPY** — stocks already leading the market the most tend to continue. Core of momentum investing.
+2. **ADX strength** — higher ADX = more established trend, less likely to reverse.
+3. **Volume ratio** — higher volume spike = more conviction behind the move.
+
+### Entry Timing
+
+Orders are placed at **9:45 AM ET** (after the first 15-min candle closes).
+
+**Rationale:** The first 15 minutes after open are the most volatile. Many gap-ups retrace before continuing. Waiting for the first candle confirms the move is real, not just opening noise. You sacrifice the first few percent but avoid false breakout traps.
+
+**Order type:** Market order with bracket stop loss.
+
+### Stop Loss
+
+Stop price = `last_close − ATR×1.5` (tight end of the trailing stop range), capped at max 1% below entry.
+
+The ATR-based stop scales to each stock's own volatility — wider for volatile stocks, tighter for stable ones.
+
+### Exit Mode
+
+- **Trailing Stop** (1.5–3× ATR): when all signals are aligned — let the winner run
+- **Fixed Take-Profit**: when RSI > 70, ADX falling, or 2+ warning signs — take profit before the reversal
+
+---
+
 ## Screening Criteria (Idea 5)
 
-Each candidate is scored out of **10**. ADX and relative strength carry double weight (★) as the strongest predictors of sustained momentum. A ticker surfaces when it reaches at least 7:
+Each candidate is scored out of **8** — one point per criterion, equal weight. A ticker surfaces when it scores ≥ 6/8:
 
-| # | Signal | Weight | Threshold |
-|---|--------|--------|-----------|
-| 1 | Price > SMA 50 | 1 | Short/medium-term bullish |
-| 2 | Price > SMA 200 | 1 | Long-term bullish |
-| 3 | EMA 9 > EMA 21 | 1 | Short-term momentum trigger |
-| 4 | RSI | 1 | 50–70 (strong but not overbought) |
-| 5 | MACD line > signal line & histogram > 0 | 1 | Buying pressure building |
-| 6 | ADX > 25 ★ | **2** | Confirms real trend strength |
-| 7 | Volume >= 20% above 20-period avg | 1 | Breakout participation |
-| 8 | Outperforming SPY (3-month RS) ★ | **2** | Leaders, not laggards |
+| # | Signal | Threshold |
+|---|--------|-----------|
+| 1 | Price > SMA 50 | Short/medium-term bullish |
+| 2 | Price > SMA 200 | Long-term bullish |
+| 3 | EMA 9 > EMA 21 | Short-term momentum trigger |
+| 4 | RSI 50–70 | Strong but not overbought |
+| 5 | MACD line > signal & histogram > 0 | Buying pressure building |
+| 6 | ADX > 25 | Confirms real trend strength |
+| 7 | Volume ≥ 20% above 20-period avg | Breakout participation |
+| 8 | Outperforming SPY (3-month RS) | Leader, not laggard |
 
 Only symbols with average daily volume ≥ 500,000 shares are considered — micro-caps and illiquid tickers are filtered out before signal computation.
 

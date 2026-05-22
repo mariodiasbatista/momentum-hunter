@@ -51,12 +51,21 @@ def _format_candidate(rank: int, c: dict) -> str:
     days = c.get("days_in_scan", 1)
     streak = f" 📅 {days}d streak" if days > 1 else ""
 
+    from trader.order_placer import position_qty, position_label
+    qty = position_qty(close)
+    pos = position_label(close)
+
+    # Mirror the bracket order price levels
+    stop_price = round(min(close - atr_min, close * 0.99), 2)
+    take_price = round(close + atr_max * 2, 2) if exit_mode == "trailing_stop" else round(close + atr_max, 2)
+
     return (
         f"*#{rank} {sym}* [{market}] — Score {score}/8{streak}\n"
         f"Price: `${close:.2f}` | RSI: `{rsi:.1f}` | ADX: `{adx:.1f}` | Vol: `{vol_ratio:.1f}x`\n"
         f"RS: `{rs_ret:+.1f}%` vs SPY `{spy_ret:+.1f}%`\n"
         f"{signal_line}\n"
-        f"Exit: {exit_label} (ATR range: `{atr_min:.2f}–{atr_max:.2f}`){warn_text}"
+        f"📦 `x{qty}` shares — {pos} | stop `${stop_price:.2f}` | tp `${take_price:.2f}`\n"
+        f"Exit: {exit_label} (ATR `{atr_min:.2f}–{atr_max:.2f}`){warn_text}"
     )
 
 

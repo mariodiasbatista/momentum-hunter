@@ -41,6 +41,21 @@ MIN_AVG_VOLUME = 500_000
 ATR_TRAILING_MIN = 1.5
 ATR_TRAILING_MAX = 3.0
 
+# ── Execution rules ────────────────────────────────────────────────────────
+# Base dollar amount per 1 position
+POSITION_SIZE_DOLLARS = 250
+
+# Price threshold: above → 1 position, below → POSITION_MULTIPLIER positions
+POSITION_PRICE_THRESHOLD = 50
+POSITION_MULTIPLIER = 3
+
+# Auto-order: how many top candidates to place orders for each morning
+AUTO_ORDER_TOP_N = 10
+
+# Priority tiebreaker sort order for equal-score candidates:
+# primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
+PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]
+
 # Crypto pairs tracked via Alpaca
 CRYPTO_PAIRS = [
     "BTC/USD",

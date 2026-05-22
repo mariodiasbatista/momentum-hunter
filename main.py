@@ -1,10 +1,15 @@
 import argparse
+import logging
 import time
 from datetime import date
 
 import config  # noqa: F401 — triggers .env load and env var validation early
 from notifier.telegram import send_results
+from notifier.telegram_handler import setup_telegram_logging
 from data.db import signals_last_computed_date
+
+setup_telegram_logging()
+log = logging.getLogger("main")
 
 
 def parse_args():

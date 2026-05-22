@@ -22,15 +22,15 @@ def _make_bars(n=220, trend="up") -> pd.DataFrame:
 
 
 class TestMaxScore:
-    def test_max_score_is_10(self):
-        assert MAX_SCORE == 10
+    def test_max_score_is_8(self):
+        assert MAX_SCORE == 8
 
     def test_weights_sum_to_max_score(self):
         assert sum(_WEIGHTS.values()) == MAX_SCORE
 
-    def test_adx_and_rs_have_double_weight(self):
-        assert _WEIGHTS["adx_strong"] == 2
-        assert _WEIGHTS["outperforming_spy"] == 2
+    def test_all_criteria_have_equal_weight(self):
+        assert _WEIGHTS["adx_strong"] == 1
+        assert _WEIGHTS["outperforming_spy"] == 1
 
     def test_all_other_weights_are_1(self):
         double_weighted = {"adx_strong", "outperforming_spy"}

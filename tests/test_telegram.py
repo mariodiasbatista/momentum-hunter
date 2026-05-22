@@ -45,9 +45,9 @@ class TestSendAlert:
 
 
 class TestFormatCandidate:
-    def test_shows_score_out_of_10(self):
-        text = _format_candidate(1, _candidate(score=9))
-        assert "9/10" in text
+    def test_shows_score_out_of_8(self):
+        text = _format_candidate(1, _candidate(score=8))
+        assert "8/8" in text
 
     def test_no_streak_when_days_is_1(self):
         text = _format_candidate(1, _candidate(days_in_scan=1))
@@ -62,10 +62,11 @@ class TestFormatCandidate:
         assert "#2" in text
         assert "MSFT" in text
 
-    def test_double_weighted_criteria_marked_with_star(self):
+    def test_all_criteria_shown_without_stars(self):
         text = _format_candidate(1, _candidate())
-        assert "ADX★" in text
-        assert "RS>SPY★" in text
+        assert "ADX" in text
+        assert "RS>SPY" in text
+        assert "★" not in text
 
     def test_warnings_shown_when_present(self):
         c = _candidate()

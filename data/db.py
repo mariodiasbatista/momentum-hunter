@@ -118,10 +118,20 @@ def init_db() -> None:
 # --- Assets ---
 
 def save_assets(records: list[dict]) -> None:
-    df = pd.DataFrame(records)
-    with get_conn() as conn:
-        conn.execute("DELETE FROM assets WHERE asset_class = ?", (records[0]["asset_class"],))
-        df.to_sql("assets", conn, if_exists="append", index=False)
+    if not records:
+        return
+    asset_class = records[0]["asset_class"]
+    cols = ["symbol", "name", "exchange", "asset_class", "tradable", "fractionable", "shortable", "updated_at"]
+    placeholders = ", ".join("?" * len(cols))
+    sql = f"INSERT OR REPLACE INTO assets ({', '.join(cols)}) VALUES ({placeholders})"
+    rows = [tuple(r[c] for c in cols) for r in records]
+    conn = get_conn()
+    try:
+        conn.execute("DELETE FROM assets WHERE asset_class = ?", (asset_class,))
+        conn.executemany(sql, rows)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def load_symbols(asset_class: str) -> list[str]:

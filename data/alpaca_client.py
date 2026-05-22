@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 import config
 
@@ -31,6 +31,27 @@ def fetch_stock_bars(symbols: list[str], lookback_days: int) -> dict[str, pd.Dat
     req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Day, start=start, adjustment="all")
     bars = _stock().get_stock_bars(req).df
     return _split_by_symbol(bars, symbols)
+
+
+def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch the most recent trade price for each symbol (pre-market aware)."""
+    from alpaca.data.requests import StockLatestBarRequest
+    try:
+        bars = _stock().get_stock_latest_bar(StockLatestBarRequest(symbol_or_symbols=symbols))
+        return {sym: float(bar.close) for sym, bar in bars.items()}
+    except Exception:
+        return {}
+
+
+def fetch_intraday_bars(symbols: list[str], lookback_hours: int = 48) -> dict[str, pd.DataFrame]:
+    """Fetch 15-minute bars for intraday RSI monitoring. lookback_hours covers enough bars for RSI(14)."""
+    start = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    tf = TimeFrame(15, TimeFrameUnit.Minute)
+    req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=tf, start=start, adjustment="all")
+    bars = _stock().get_stock_bars(req).df
+    result = _split_by_symbol(bars, symbols)
+    # Intraday needs at least 20 bars (5 hours of 15-min data) for a meaningful RSI
+    return {sym: df for sym, df in result.items() if len(df) >= 20}
 
 
 def fetch_crypto_bars(pairs: list[str], lookback_days: int) -> dict[str, pd.DataFrame]:

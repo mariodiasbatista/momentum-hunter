@@ -1,14 +1,22 @@
+import logging
+
 import config
 from data.db import load_signals, signals_computed_today, signal_persistence
+
+log = logging.getLogger("scanner.stocks")
 
 
 def run_stock_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
     if signals_computed_today():
         print("Loading pre-computed stock signals from DB...")
-        candidates = load_signals("us_equity", min_score=min_score)
+        all_signals = load_signals("us_equity", min_score=0)
+        candidates = [c for c in all_signals if c["score"] >= min_score]
+        blocked = len(all_signals) - len(candidates)
         persistence = signal_persistence("us_equity")
         for c in candidates:
             c["days_in_scan"] = persistence.get(c["symbol"], 1)
+        log.info("[stocks] Scanned: %d | Approved: %d (score ≥ %d) | Blocked: %d",
+                 len(all_signals), len(candidates), min_score, blocked)
         print(f"Loaded {len(candidates)} candidates from DB.")
         return candidates
 
@@ -39,5 +47,10 @@ def run_stock_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
             continue
         candidates.append({"symbol": symbol, "market": "stocks", **result})
 
-    candidates.sort(key=lambda x: x["score"], reverse=True)
+    candidates.sort(key=lambda x: (
+        -x["score"],
+        -x["relative_strength"]["rs_return"],
+        -x["momentum"]["adx"],
+        -x["volume"]["volume_ratio"],
+    ))
     return candidates
