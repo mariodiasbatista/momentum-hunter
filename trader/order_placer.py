@@ -155,8 +155,11 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.info("[orders] No pre-market filter — using full candidate list")
 
     if in_cooldown:
-        log.info("[orders] Cooldown (%dd, open positions): skipping %s",
-                 config.ORDER_COOLDOWN_DAYS, ", ".join(sorted(in_cooldown)))
+        symbols_str = ", ".join(sorted(in_cooldown))
+        log.info(
+            "⏳ Cooldown (%dd) — skipping open position(s): %s",
+            config.ORDER_COOLDOWN_DAYS, symbols_str
+        )
 
     log.info("[orders] Starting — %d candidates, %d already ordered today",
              len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
