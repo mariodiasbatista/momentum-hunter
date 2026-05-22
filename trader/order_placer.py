@@ -132,6 +132,14 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     client = _get_client()
     already_ordered = _orders_today()
     in_cooldown = _symbols_in_cooldown()
+
+    # Skip symbols with an existing open position — never double-buy
+    try:
+        open_positions = {p.symbol for p in client.get_all_positions()}
+    except Exception as exc:
+        log.warning("[orders] Could not fetch open positions for dedup check: %s", exc)
+        open_positions = set()
+
     placed = []
 
     # Respect pre-market filter if validator ran this morning
@@ -146,6 +154,9 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.info("[orders] Cooldown (%dd): skipping %s",
                  config.ORDER_COOLDOWN_DAYS, ", ".join(sorted(in_cooldown)))
 
+    if open_positions:
+        log.info("[orders] Open positions (will skip): %s", ", ".join(sorted(open_positions)))
+
     log.info("[orders] Starting — %d candidates, %d already ordered today",
              len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
 
@@ -158,6 +169,10 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
         if approved is not None and symbol not in approved:
             log.info("[orders] Skip %s — failed pre-market validation", symbol)
+            continue
+
+        if symbol in open_positions:
+            log.info("[orders] Skip %s — position already open", symbol)
             continue
 
         if symbol in in_cooldown:

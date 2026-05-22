@@ -195,6 +195,21 @@ class TestCooldown:
             from trader.order_placer import _symbols_in_cooldown
             assert _symbols_in_cooldown() == set()
 
+    def test_place_orders_skips_open_position(self, tmp_path):
+        mock_client = MagicMock()
+        mock_client.submit_order.return_value = _mock_order()
+        mock_pos = MagicMock()
+        mock_pos.symbol = "AAPL"
+        mock_client.get_all_positions.return_value = [mock_pos]
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(symbol="AAPL")])
+        assert len(placed) == 0
+        mock_client.submit_order.assert_not_called()
+
     def test_place_orders_skips_cooldown_symbol(self, tmp_path):
         from datetime import date, timedelta
         yesterday = (date.today() - timedelta(days=1)).isoformat()
