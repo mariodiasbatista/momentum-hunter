@@ -12,6 +12,7 @@ Positions not found in today's signals are left untouched (logged as warning).
 import logging
 
 import config
+from trader._utils import log_api_error
 
 log = logging.getLogger("trader.monitor")
 
@@ -40,7 +41,7 @@ def check_and_exit(signals: dict) -> list[dict]:
     try:
         positions = client.get_all_positions()
     except Exception as exc:
-        log.error("[monitor] Failed to fetch open positions: %s", exc)
+        log_api_error(log, "[monitor] Failed to fetch open positions", exc)
         return []
 
     log.info("[monitor] Checking %d open position(s) against today's signals", len(positions))
@@ -88,7 +89,7 @@ def check_and_exit(signals: dict) -> list[dict]:
                 "unrealized_pl": str(pos.unrealized_pl),
             })
         except Exception as exc:
-            log.error("[monitor] ❌ Failed to close %s: %s", symbol, exc)
+            log_api_error(log, f"[monitor] ❌ Failed to close {symbol}", exc)
 
     log.info("[monitor] Done — %d/%d positions closed", len(closed), len(positions))
     return closed

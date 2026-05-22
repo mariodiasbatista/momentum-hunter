@@ -15,6 +15,7 @@ import logging
 import pandas_ta as ta
 
 import config
+from trader._utils import log_api_error
 
 log = logging.getLogger("trader.intraday")
 
@@ -48,7 +49,7 @@ def run_intraday_check() -> list[dict]:
     try:
         positions = client.get_all_positions()
     except Exception as exc:
-        log.error("[intraday] Failed to fetch open positions: %s", exc)
+        log_api_error(log, "[intraday] Failed to fetch open positions", exc)
         return []
 
     if not positions:
@@ -61,7 +62,7 @@ def run_intraday_check() -> list[dict]:
     try:
         bars_map = fetch_intraday_bars(symbols)
     except Exception as exc:
-        log.error("[intraday] Failed to fetch 15-min bars: %s", exc)
+        log_api_error(log, "[intraday] Failed to fetch 15-min bars", exc)
         return []
 
     log.debug("[intraday] Got 15-min bars for %d/%d symbols", len(bars_map), len(symbols))
@@ -103,7 +104,7 @@ def run_intraday_check() -> list[dict]:
                 "reason":       f"15-min RSI={intraday_rsi:.1f} > {RSI_OVERBOUGHT}",
             })
         except Exception as exc:
-            log.error("[intraday] ❌ Failed to close %s: %s", symbol, exc)
+            log_api_error(log, f"[intraday] ❌ Failed to close {symbol}", exc)
 
     log.info("[intraday] Done — %d/%d positions closed", len(closed), len(positions))
     return closed

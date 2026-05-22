@@ -28,6 +28,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 import config
+from trader._utils import log_api_error
 
 log = logging.getLogger("trader.recorder")
 
@@ -101,7 +102,7 @@ def scan_for_fills() -> list[dict]:
         )
         closed_sells = client.get_orders(filter=req)
     except Exception as exc:
-        log.error("[recorder] Failed to fetch closed orders from Alpaca: %s", exc)
+        log_api_error(log, "[recorder] Failed to fetch closed orders", exc)
         return []
 
     log.debug("[recorder] Alpaca returned %d closed sell order(s) today", len(closed_sells))

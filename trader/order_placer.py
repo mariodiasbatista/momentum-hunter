@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
+from trader._utils import log_api_error
 
 log = logging.getLogger("trader.orders")
 
@@ -175,7 +176,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 "order_id":   str(order.id),
             })
         except Exception as exc:
-            log.error("[orders] ❌ Failed to place order for %s: %s", symbol, exc)
+            log_api_error(log, f"[orders] ❌ Failed to place order for {symbol}", exc)
 
     log.info("[orders] Done — %d placed, %d skipped", len(placed),
              len(candidates[:config.AUTO_ORDER_TOP_N]) - len(placed))

@@ -11,6 +11,39 @@ from unittest.mock import MagicMock, patch, call
 
 import pandas as pd
 import pytest
+from trader._utils import is_transient, log_api_error
+
+
+class TestIsTransient:
+    def test_connection_refused_is_transient(self):
+        assert is_transient(Exception("connection refused"))
+
+    def test_timeout_is_transient(self):
+        assert is_transient(Exception("request timed out"))
+
+    def test_503_is_transient(self):
+        assert is_transient(Exception("503 service unavailable"))
+
+    def test_429_rate_limit_is_transient(self):
+        assert is_transient(Exception("429 too many requests"))
+
+    def test_auth_error_is_not_transient(self):
+        assert not is_transient(Exception("403 forbidden"))
+
+    def test_invalid_symbol_is_not_transient(self):
+        assert not is_transient(Exception("asset not found"))
+
+    def test_log_api_error_warns_on_transient(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            log_api_error(logging.getLogger("test"), "fetch failed", Exception("connection refused"))
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_log_api_error_errors_on_real_failure(self, caplog):
+        import logging
+        with caplog.at_level(logging.ERROR):
+            log_api_error(logging.getLogger("test"), "fetch failed", Exception("403 forbidden"))
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -382,15 +415,25 @@ class TestIntradayMonitor:
         assert len(closed) == 0
         assert any("no 15-min bar data" in r.message for r in caplog.records)
 
-    def test_handles_position_fetch_error(self, caplog):
+    def test_handles_transient_position_fetch_error(self, caplog):
         mock_client = MagicMock()
         mock_client.get_all_positions.side_effect = Exception("connection refused")
+        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client):
+            with caplog.at_level(logging.WARNING, logger="trader.intraday"):
+                from trader.intraday_monitor import run_intraday_check
+                result = run_intraday_check()
+        assert result == []
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_handles_real_position_fetch_error(self, caplog):
+        mock_client = MagicMock()
+        mock_client.get_all_positions.side_effect = Exception("403 forbidden")
         with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client):
             with caplog.at_level(logging.ERROR, logger="trader.intraday"):
                 from trader.intraday_monitor import run_intraday_check
                 result = run_intraday_check()
         assert result == []
-        assert any("Failed to fetch" in r.message for r in caplog.records)
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
 
     def test_handles_close_position_error(self, caplog):
         pos = _mock_position("FAIL")
