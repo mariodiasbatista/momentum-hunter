@@ -3,6 +3,8 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import config
+
 ET = ZoneInfo("America/New_York")
 _RUNS_FILE = Path(__file__).parent.parent / "data" / "job_runs.json"
 
@@ -80,7 +82,7 @@ def build_schedule_message() -> str:
         from data.db import load_signals
         candidates = load_signals("us_equity", min_score=6)
         if candidates:
-            symbols = [c["symbol"] for c in candidates[:8]]
+            symbols = [c["symbol"] for c in candidates[:config.AUTO_ORDER_TOP_N]]
             lines.append(f"\n📋 *Watchlist:* {', '.join(symbols)}")
         else:
             lines.append("\n📋 *Watchlist:* No candidates today")
