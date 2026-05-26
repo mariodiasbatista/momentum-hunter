@@ -43,6 +43,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+def _market_closed_today() -> bool:
+    from data.fetcher import is_market_open_today
+    return not is_market_open_today()
+
+
 def run_ingest() -> None:
     import ingest
     log.info("=== Starting daily ingestion ===")
@@ -58,6 +63,9 @@ def run_ingest() -> None:
 
 
 def run_premarket() -> None:
+    if _market_closed_today():
+        log.info("=== Pre-market skipped — market holiday ===")
+        return
     log.info("=== Pre-market validator (9:15 AM ET) ===")
     t0 = time.monotonic()
     try:
@@ -80,6 +88,9 @@ def run_premarket() -> None:
 
 
 def run_orders() -> None:
+    if _market_closed_today():
+        log.info("=== Orders skipped — market holiday ===")
+        return
     log.info("=== Placing morning orders (9:45 AM ET) ===")
     try:
         from data.db import load_signals, signal_persistence
@@ -98,6 +109,9 @@ def run_orders() -> None:
 
 
 def run_intraday_monitor() -> None:
+    if _market_closed_today():
+        log.info("=== Intraday monitor skipped — market holiday ===")
+        return
     log.info("=== Intraday RSI monitor (15-min bars) ===")
     t0 = time.monotonic()
     try:
@@ -114,6 +128,9 @@ def run_intraday_monitor() -> None:
 
 
 def run_monitor() -> None:
+    if _market_closed_today():
+        log.info("=== Exit monitor skipped — market holiday ===")
+        return
     log.info("=== Exit monitor (3:30 PM ET) ===")
     t0 = time.monotonic()
     try:

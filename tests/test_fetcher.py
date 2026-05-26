@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from data.fetcher import _last_trading_date, _cache_is_fresh
+from data.fetcher import _last_trading_date, _cache_is_fresh, is_market_open_today
 
 
 class TestLastTradingDate:
@@ -70,3 +70,32 @@ class TestCacheIsFresh:
         with patch("data.fetcher.bars_last_date", return_value="2026-05-15"), \
              patch("data.fetcher._last_trading_date", return_value="2026-05-15"):
             assert _cache_is_fresh() is True
+
+
+class TestIsMarketOpenToday:
+    def test_open_on_regular_tuesday(self):
+        # 2026-05-26 is a regular Tuesday
+        with patch("data.fetcher.date") as mock_date:
+            mock_date.today.return_value = date(2026, 5, 26)
+            import pandas_market_calendars as mcal
+            nyse = mcal.get_calendar("NYSE")
+            with patch("data.fetcher._nyse", nyse):
+                assert is_market_open_today() is True
+
+    def test_closed_on_memorial_day(self):
+        # 2026-05-25 = Memorial Day (NYSE closed)
+        with patch("data.fetcher.date") as mock_date:
+            mock_date.today.return_value = date(2026, 5, 25)
+            import pandas_market_calendars as mcal
+            nyse = mcal.get_calendar("NYSE")
+            with patch("data.fetcher._nyse", nyse):
+                assert is_market_open_today() is False
+
+    def test_closed_on_saturday(self):
+        # 2026-05-23 is a Saturday
+        with patch("data.fetcher.date") as mock_date:
+            mock_date.today.return_value = date(2026, 5, 23)
+            import pandas_market_calendars as mcal
+            nyse = mcal.get_calendar("NYSE")
+            with patch("data.fetcher._nyse", nyse):
+                assert is_market_open_today() is False

@@ -22,6 +22,12 @@ def _last_trading_date() -> str:
     return schedule.index[-1].date().isoformat()
 
 
+def is_market_open_today() -> bool:
+    today = date.today().isoformat()
+    schedule = _nyse.schedule(start_date=today, end_date=today)
+    return not schedule.empty
+
+
 def _cache_is_fresh() -> bool:
     last = bars_last_date()
     if not last:

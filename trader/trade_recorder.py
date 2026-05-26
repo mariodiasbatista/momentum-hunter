@@ -99,6 +99,7 @@ def scan_for_fills() -> list[dict]:
             side=OrderSide.SELL,
             after=today_start,
             limit=100,
+            nested=False,  # flatten bracket child orders so stop/TP legs are visible
         )
         closed_sells = client.get_orders(filter=req)
     except Exception as exc:

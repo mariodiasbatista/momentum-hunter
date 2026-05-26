@@ -49,7 +49,7 @@ def fetch_intraday_bars(symbols: list[str], lookback_hours: int = 48) -> dict[st
     tf = TimeFrame(15, TimeFrameUnit.Minute)
     req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=tf, start=start, adjustment="all")
     bars = _stock().get_stock_bars(req).df
-    result = _split_by_symbol(bars, symbols)
+    result = _split_by_symbol(bars, symbols, min_bars=0)
     # Intraday needs at least 20 bars (5 hours of 15-min data) for a meaningful RSI
     return {sym: df for sym, df in result.items() if len(df) >= 20}
 
@@ -61,7 +61,7 @@ def fetch_crypto_bars(pairs: list[str], lookback_days: int) -> dict[str, pd.Data
     return _split_by_symbol(bars, pairs)
 
 
-def _split_by_symbol(df: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataFrame]:
+def _split_by_symbol(df: pd.DataFrame, symbols: list[str], min_bars: int = 50) -> dict[str, pd.DataFrame]:
     result: dict[str, pd.DataFrame] = {}
     if df.empty:
         return result
@@ -71,7 +71,7 @@ def _split_by_symbol(df: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataF
                 sym_df = df.xs(sym, level="symbol").copy()
                 sym_df.index = pd.to_datetime(sym_df.index)
                 sym_df.sort_index(inplace=True)
-                if len(sym_df) >= 50:
+                if len(sym_df) >= min_bars:
                     result[sym] = sym_df
             except KeyError:
                 pass
