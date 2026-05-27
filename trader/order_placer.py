@@ -164,6 +164,16 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     log.info("[orders] Starting — %d candidates, %d already ordered today",
              len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
 
+    # Fetch current ask prices in one batch to anchor stop calculations to actual market price.
+    # Falls back to last_close per symbol if the quote fetch fails.
+    top_symbols = [c["symbol"] for c in candidates[:config.AUTO_ORDER_TOP_N]]
+    from data.alpaca_client import fetch_latest_asks
+    current_asks = fetch_latest_asks(top_symbols)
+    if current_asks:
+        log.debug("[orders] Fetched current asks for %d symbol(s)", len(current_asks))
+    else:
+        log.warning("[orders] Could not fetch current asks — using last_close for stop calculation")
+
     for c in candidates[:config.AUTO_ORDER_TOP_N]:
         symbol = c["symbol"]
 
@@ -179,24 +189,27 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             log.info("[orders] Skip %s — open position within %dd cooldown", symbol, config.ORDER_COOLDOWN_DAYS)
             continue
 
-        price      = c["trend"]["last_close"]
+        last_close = c["trend"]["last_close"]
+        market_price = current_asks.get(symbol, last_close)
         exit_mode  = c["exit"]["exit_mode"]
         atr_min    = c["exit"]["trailing_stop_atr_range"][0]
         atr_max    = c["exit"]["trailing_stop_atr_range"][1]
-        qty        = position_qty(price)
+        qty        = position_qty(market_price)
 
-        # Stop loss: ATR×1.5 below entry, never more than 1% below
-        stop_price = round(min(price - atr_min, price * 0.99), 2)
+        # Stop loss: ATR×1.5 below entry, never more than 1% below.
+        # Always cap at market_price - 0.01 — broker rejects stop within $0.01 of baseprice.
+        stop_price = round(min(market_price - atr_min, market_price * 0.99), 2)
+        stop_price = min(stop_price, round(market_price - 0.01, 2))
         stop_price = max(stop_price, 0.01)
 
         # Take profit: wide net for trailing_stop mode, defined target for fixed mode
         if exit_mode == "trailing_stop":
-            take_price = round(price + atr_max * 2, 2)   # ATR×6 — let the winner run
+            take_price = round(market_price + atr_max * 2, 2)   # ATR×6 — let the winner run
         else:
-            take_price = round(price + atr_max, 2)        # ATR×3 — take profit and exit
+            take_price = round(market_price + atr_max, 2)        # ATR×3 — take profit and exit
 
-        log.debug("[orders] %s | price $%.2f | qty %d | stop $%.2f | tp $%.2f | mode=%s",
-                  symbol, price, qty, stop_price, take_price, exit_mode)
+        log.debug("[orders] %s | ask $%.2f | last_close $%.2f | qty %d | stop $%.2f | tp $%.2f | mode=%s",
+                  symbol, market_price, last_close, qty, stop_price, take_price, exit_mode)
 
         try:
             order = client.submit_order(MarketOrderRequest(
@@ -208,17 +221,17 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 stop_loss=StopLossRequest(stop_price=stop_price),
                 take_profit=TakeProfitRequest(limit_price=take_price),
             ))
-            _record_order(symbol, qty, price, stop_price, take_price, exit_mode)
+            _record_order(symbol, qty, market_price, stop_price, take_price, exit_mode)
             log.info("[orders] ✅ %s x%d | entry mkt | stop $%.2f | tp $%.2f | %s | mode=%s",
-                     symbol, qty, stop_price, take_price, position_label(price), exit_mode)
+                     symbol, qty, stop_price, take_price, position_label(market_price), exit_mode)
             placed.append({
                 "symbol":     symbol,
                 "qty":        qty,
-                "price":      price,
+                "price":      market_price,
                 "stop_price": stop_price,
                 "take_price": take_price,
                 "exit_mode":  exit_mode,
-                "pos_label":  position_label(price),
+                "pos_label":  position_label(market_price),
                 "order_id":   str(order.id),
             })
         except Exception as exc:

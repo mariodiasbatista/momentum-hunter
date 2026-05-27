@@ -43,6 +43,16 @@ def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
+def fetch_latest_asks(symbols: list[str]) -> dict[str, float]:
+    """Fetch the current ask price for each symbol — used to anchor stop prices at order time."""
+    from alpaca.data.requests import StockLatestQuoteRequest
+    try:
+        quotes = _stock().get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=symbols))
+        return {sym: float(q.ask_price) for sym, q in quotes.items() if q.ask_price}
+    except Exception:
+        return {}
+
+
 def fetch_intraday_bars(symbols: list[str], lookback_hours: int = 48) -> dict[str, pd.DataFrame]:
     """Fetch 15-minute bars for intraday RSI monitoring. lookback_hours covers enough bars for RSI(14)."""
     start = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)

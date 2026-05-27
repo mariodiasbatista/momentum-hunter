@@ -249,7 +249,9 @@ class TestPlaceOrders:
         with patch("trader.order_placer._get_client", return_value=mock_client), \
              patch("trader.order_placer._ORDERS_FILE",
                    orders_file or Path("/tmp/orders_test_noop.json")), \
-             patch("trader.order_placer._record_order"):
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
             from trader.order_placer import place_orders
             placed = place_orders(candidates)
 
@@ -297,7 +299,9 @@ class TestPlaceOrders:
         mock_client.submit_order.side_effect = Exception("API down")
         with patch("trader.order_placer._get_client", return_value=mock_client), \
              patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
-             patch("trader.order_placer._record_order"):
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
             with caplog.at_level(logging.ERROR, logger="trader.orders"):
                 from trader.order_placer import place_orders
                 placed = place_orders([_candidate()])
