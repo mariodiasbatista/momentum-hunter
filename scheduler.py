@@ -87,6 +87,22 @@ def run_premarket() -> None:
         send_alert(f"Pre-market validator failed: `{exc}`")
 
 
+def run_stop_update() -> None:
+    if _market_closed_today():
+        log.info("=== Stop update skipped — market holiday ===")
+        return
+    log.info("=== Trailing stop update (9:40 AM ET) ===")
+    try:
+        from trader.stop_updater import update_trailing_stops, send_stop_summary
+        updated = update_trailing_stops()
+        send_stop_summary(updated)
+        log.info("=== Stop update done: %d raised ===", len(updated))
+    except Exception as exc:
+        log.exception("Stop update failed")
+        from notifier.telegram import send_alert
+        send_alert(f"Stop update failed: `{exc}`")
+
+
 def run_orders() -> None:
     if _market_closed_today():
         log.info("=== Orders skipped — market holiday ===")
@@ -202,6 +218,15 @@ def main() -> None:
         misfire_grace_time=120,
     )
 
+    # 9:40 AM ET = raise stops on profitable overnight positions before new orders fire
+    scheduler.add_job(
+        run_stop_update,
+        CronTrigger(day_of_week="mon-fri", hour=9, minute=40, timezone="America/New_York"),
+        id="stop_update",
+        name="Trailing stop update",
+        misfire_grace_time=120,
+    )
+
     # 9:45 AM ET = after first 15-min candle confirms direction
     scheduler.add_job(
         run_orders,
@@ -239,7 +264,7 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
-    log.info("Scheduler started. Jobs: premarket@9:15ET, orders@9:45ET, intraday@every30min(10-15ET), monitor@15:30ET, ingest@21:30UTC, notify@22:00UTC (Mon–Fri)")
+    log.info("Scheduler started. Jobs: premarket@9:15ET, stops@9:40ET, orders@9:45ET, intraday@every30min(10-15ET), monitor@15:30ET, ingest@21:30UTC, notify@22:00UTC (Mon–Fri)")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

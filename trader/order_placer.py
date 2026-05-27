@@ -99,6 +99,33 @@ def load_orders_today() -> dict:
         return {}
 
 
+def load_entry_for_symbol(symbol: str) -> dict | None:
+    """Return the most recent order record for symbol across all dates, or None."""
+    try:
+        data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
+        for date_str in sorted(data.keys(), reverse=True):
+            day = data[date_str]
+            if isinstance(day, dict) and symbol in day:
+                return day[symbol]
+    except Exception:
+        pass
+    return None
+
+
+def update_stop_in_record(symbol: str, new_stop: float) -> None:
+    """Update the recorded stop_price for symbol in the most recent order entry."""
+    try:
+        data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
+        for date_str in sorted(data.keys(), reverse=True):
+            day = data[date_str]
+            if isinstance(day, dict) and symbol in day:
+                day[symbol]["stop_price"] = new_stop
+                _ORDERS_FILE.write_text(json.dumps(data))
+                return
+    except Exception:
+        pass
+
+
 def _record_order(symbol: str, qty: int, entry_price: float,
                   stop_price: float, take_price: float, exit_mode: str) -> None:
     today = datetime.now(timezone.utc).date().isoformat()
@@ -216,7 +243,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
+                time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.BRACKET,
                 stop_loss=StopLossRequest(stop_price=stop_price),
                 take_profit=TakeProfitRequest(limit_price=take_price),

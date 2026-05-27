@@ -58,6 +58,12 @@ AUTO_ORDER_TOP_N = 10
 # 5 = skip anything bought in the last 5 days
 ORDER_COOLDOWN_DAYS = 1
 
+# Trailing stop management (runs every morning at 9:40 AM ET)
+# Minimum gain above entry before we start trailing the stop up
+STOP_TRAIL_MIN_GAIN_PCT = 0.03   # 3% gain required before trailing
+# Fraction of the gain above entry to lock in (0.5 = protect 50% of gains)
+STOP_TRAIL_LOCK_RATIO   = 0.50
+
 # Priority tiebreaker sort order for equal-score candidates:
 # primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
 PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]
