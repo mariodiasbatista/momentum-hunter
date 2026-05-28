@@ -99,14 +99,14 @@ def update_trailing_stops() -> list[dict]:
                       symbol, gain_pct * 100, config.STOP_TRAIL_MIN_GAIN_PCT * 100)
             # Still ensure a stop exists if none is active
             if not stop_order:
-                _place_new_stop(client, symbol, pos, current_stop or candidate_stop)
+                _place_new_stop(client, symbol, pos, current_stop or candidate_stop, current_price)
             continue
 
         if candidate_stop <= effective_current_stop:
             log.debug("[stops] %s — candidate stop $%.2f not above current $%.2f, no update",
                       symbol, candidate_stop, effective_current_stop)
             if not stop_order:
-                _place_new_stop(client, symbol, pos, effective_current_stop)
+                _place_new_stop(client, symbol, pos, effective_current_stop, current_price)
             continue
 
         # Update or place the stop
@@ -118,7 +118,7 @@ def update_trailing_stops() -> list[dict]:
                 )
                 action = "raised"
             else:
-                _place_new_stop(client, symbol, pos, candidate_stop)
+                _place_new_stop(client, symbol, pos, candidate_stop, current_price)
                 action = "placed"
 
             update_stop_in_record(symbol, candidate_stop)
@@ -138,10 +138,19 @@ def update_trailing_stops() -> list[dict]:
     return updated
 
 
-def _place_new_stop(client, symbol: str, pos, stop_price: float) -> None:
+def _place_new_stop(client, symbol: str, pos, stop_price: float, current_price: float) -> None:
     """Place a standalone GTC stop-sell order for a position with no active stop."""
     from alpaca.trading.requests import StopOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+
+    if stop_price >= current_price:
+        log.warning(
+            "[stops] %s — recorded stop $%.2f is >= current price $%.2f "
+            "(position already below intended stop, no stop placed)",
+            symbol, stop_price, current_price,
+        )
+        return
+
     qty = int(float(getattr(pos, "qty", 1)))
     client.submit_order(StopOrderRequest(
         symbol=symbol,
