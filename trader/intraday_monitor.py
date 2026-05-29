@@ -15,7 +15,7 @@ import logging
 import pandas_ta as ta
 
 import config
-from trader._utils import log_api_error
+from trader._utils import cancel_open_orders, log_api_error
 
 log = logging.getLogger("trader.intraday")
 
@@ -93,6 +93,7 @@ def run_intraday_check() -> list[dict]:
                  symbol, intraday_rsi, RSI_OVERBOUGHT)
 
         try:
+            cancel_open_orders(client, symbol, log)
             client.close_position(symbol)
             pl = str(pos.unrealized_pl)
             log.info("[intraday] ✅ Closed %s | intraday RSI=%.1f | unrealized P&L=%s",

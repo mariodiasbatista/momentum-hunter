@@ -22,8 +22,13 @@ def _get_client():
     return TradingClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, paper=paper)
 
 
-def _find_stop_order(client, symbol: str):
-    """Return the active GTC stop-sell order for symbol, or None."""
+def _find_sell_orders(client, symbol: str) -> tuple:
+    """Return (stop_order_or_None, any_sell_order_exists).
+
+    stop_order is the active STOP-type sell order if one exists (used for replace_order).
+    any_sell_order_exists is True whenever *any* open sell order holds shares (stop, limit,
+    bracket leg, etc.) — used to prevent placing a duplicate stop.
+    """
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus, OrderType, OrderSide
     try:
@@ -31,12 +36,17 @@ def _find_stop_order(client, symbol: str):
             status=QueryOrderStatus.OPEN,
             symbols=[symbol],
         ))
+        stop_order = None
+        has_any_sell = False
         for o in orders:
-            if getattr(o, "type", None) == OrderType.STOP and getattr(o, "side", None) == OrderSide.SELL:
-                return o
+            if getattr(o, "side", None) == OrderSide.SELL:
+                has_any_sell = True
+                if getattr(o, "type", None) == OrderType.STOP:
+                    stop_order = o
+        return stop_order, has_any_sell
     except Exception as exc:
         log.warning("[stops] Could not fetch orders for %s: %s", symbol, exc)
-    return None
+    return None, False
 
 
 def update_trailing_stops() -> list[dict]:
@@ -88,7 +98,7 @@ def update_trailing_stops() -> list[dict]:
         candidate_stop = min(candidate_stop, round(current_price - 0.01, 2))
         candidate_stop = max(candidate_stop, 0.01)
 
-        stop_order = _find_stop_order(client, symbol)
+        stop_order, has_any_sell = _find_sell_orders(client, symbol)
         broker_stop = float(getattr(stop_order, "stop_price", None) or 0)
 
         # Use the higher of recorded and broker stop as the current floor
@@ -98,14 +108,14 @@ def update_trailing_stops() -> list[dict]:
             log.debug("[stops] %s — gain %.1f%% below threshold %.1f%%, no update",
                       symbol, gain_pct * 100, config.STOP_TRAIL_MIN_GAIN_PCT * 100)
             # Still ensure a stop exists if none is active
-            if not stop_order:
+            if not has_any_sell:
                 _place_new_stop(client, symbol, pos, current_stop or candidate_stop, current_price)
             continue
 
         if candidate_stop <= effective_current_stop:
             log.debug("[stops] %s — candidate stop $%.2f not above current $%.2f, no update",
                       symbol, candidate_stop, effective_current_stop)
-            if not stop_order:
+            if not has_any_sell:
                 _place_new_stop(client, symbol, pos, effective_current_stop, current_price)
             continue
 
@@ -132,7 +142,13 @@ def update_trailing_stops() -> list[dict]:
                 "gain_pct":  round(gain_pct * 100, 1),
             })
         except Exception as exc:
-            log_api_error(log, f"[stops] ❌ Failed to update stop for {symbol}", exc)
+            # Race condition: price dropped between ask-fetch and order submission.
+            # Downgrade to warning — the existing stop remains in place.
+            if "stop price must be less than current price" in str(exc) or "42210000" in str(exc):
+                log.warning("[stops] %s — stop price above market (price moved since fetch), skipping: %s",
+                            symbol, exc)
+            else:
+                log_api_error(log, f"[stops] ❌ Failed to update stop for {symbol}", exc)
 
     log.info("[stops] Done — %d/%d stop(s) updated", len(updated), len(positions))
     return updated

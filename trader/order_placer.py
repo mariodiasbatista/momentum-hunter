@@ -13,6 +13,7 @@ Buy rules (Execution v1 — 2026-05-22):
 """
 import json
 import logging
+import math
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -224,9 +225,11 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         qty        = position_qty(market_price)
 
         # Stop loss: ATR×1.5 below entry, never more than 1% below.
-        # Always cap at market_price - 0.01 — broker rejects stop within $0.01 of baseprice.
+        # Floor (not round) the cap — round() can produce a value above market_price - 0.01
+        # when the fractional cent rounds up (e.g. 0.4263 - 0.01 = 0.4163 → round gives 0.42).
+        stop_cap = math.floor((market_price - 0.01) * 100) / 100
         stop_price = round(min(market_price - atr_min, market_price * 0.99), 2)
-        stop_price = min(stop_price, round(market_price - 0.01, 2))
+        stop_price = min(stop_price, stop_cap)
         stop_price = max(stop_price, 0.01)
 
         # Take profit: wide net for trailing_stop mode, defined target for fixed mode
@@ -262,7 +265,10 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 "order_id":   str(order.id),
             })
         except Exception as exc:
-            log_api_error(log, f"[orders] ❌ Failed to place order for {symbol}", exc)
+            if "not found" in str(exc).lower():
+                log.warning("[orders] %s — asset not available on Alpaca, skipping: %s", symbol, exc)
+            else:
+                log_api_error(log, f"[orders] ❌ Failed to place order for {symbol}", exc)
 
     log.info("[orders] Done — %d placed, %d skipped", len(placed),
              len(candidates[:config.AUTO_ORDER_TOP_N]) - len(placed))
