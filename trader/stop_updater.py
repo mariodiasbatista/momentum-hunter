@@ -122,8 +122,8 @@ def update_trailing_stops() -> list[dict]:
         # Update or place the stop
         try:
             if stop_order:
-                client.replace_order(
-                    order_id=stop_order.id,
+                client.replace_order_by_id(
+                    order_id=str(stop_order.id),
                     order_data=ReplaceOrderRequest(stop_price=candidate_stop),
                 )
                 action = "raised"
