@@ -70,7 +70,7 @@ def check_and_exit(signals: dict) -> list[dict]:
         if plpc >= config.MIN_GAIN_TAKE_PCT:
             reasons.append(f"gain {plpc:.1f}% at EOD — locking in profit")
         if exit_mode == "fixed_take_profit":
-            reasons.append(f"exit_mode=fixed_take_profit")
+            reasons.append("exit mode: fixed take-profit")
         if warning_count >= 2:
             reasons.append(f"{warning_count} warnings: {', '.join(warnings)}")
         if rsi > config.RSI_OVERBOUGHT:
