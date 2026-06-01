@@ -225,10 +225,11 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         qty        = position_qty(market_price)
 
         # Stop loss: ATR×1.5 below entry, never more than 1% below.
-        # Floor (not round) the cap — round() can produce a value above market_price - 0.01
-        # when the fractional cent rounds up (e.g. 0.4263 - 0.01 = 0.4163 → round gives 0.42).
+        # Subtract an extra cent from the ATR leg — if the fill lands exactly at
+        # ask - atr_min (a 1-ATR drop from quote to fill), the stop would equal
+        # the fill price and be rejected by the broker (needs <= fill - 0.01).
         stop_cap = math.floor((market_price - 0.01) * 100) / 100
-        stop_price = round(min(market_price - atr_min, market_price * 0.99), 2)
+        stop_price = round(min(market_price - atr_min - 0.01, market_price * 0.99), 2)
         stop_price = min(stop_price, stop_cap)
         stop_price = max(stop_price, 0.01)
 
