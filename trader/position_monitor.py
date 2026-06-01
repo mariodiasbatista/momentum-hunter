@@ -59,11 +59,16 @@ def check_and_exit(signals: dict) -> list[dict]:
         warning_count = signal["exit"]["warning_count"]
         warnings      = signal["exit"]["warnings"]
         rsi           = signal["momentum"]["rsi"]
+        plpc          = float(pos.unrealized_plpc or 0) * 100
 
-        log.debug("[monitor] %s | exit_mode=%s | warnings=%d | RSI=%.1f",
-                  symbol, exit_mode, warning_count, rsi)
+        log.debug("[monitor] %s | exit_mode=%s | warnings=%d | RSI=%.1f | P&L=%.1f%%",
+                  symbol, exit_mode, warning_count, rsi, plpc)
 
         reasons = []
+        if plpc < -config.MAX_LOSS_PCT:
+            reasons.append(f"loss {abs(plpc):.1f}% exceeds max {config.MAX_LOSS_PCT:.0f}%")
+        if plpc >= config.MIN_GAIN_TAKE_PCT:
+            reasons.append(f"gain {plpc:.1f}% at EOD — locking in profit")
         if exit_mode == "fixed_take_profit":
             reasons.append(f"exit_mode=fixed_take_profit")
         if warning_count >= 2:

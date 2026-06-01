@@ -64,6 +64,10 @@ STOP_TRAIL_MIN_GAIN_PCT = 0.03   # 3% gain required before trailing
 # Fraction of the gain above entry to lock in (0.5 = protect 50% of gains)
 STOP_TRAIL_LOCK_RATIO   = 0.50
 
+# Exit thresholds
+MAX_LOSS_PCT      = 5.0   # Close if unrealized loss exceeds this % from entry
+MIN_GAIN_TAKE_PCT = 8.0   # Lock in profits when gain exceeds this % from entry
+
 # Priority tiebreaker sort order for equal-score candidates:
 # primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
 PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]

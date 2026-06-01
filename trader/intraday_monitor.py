@@ -70,6 +70,23 @@ def run_intraday_check() -> list[dict]:
     closed = []
     for pos in positions:
         symbol = pos.symbol
+        plpc = float(pos.unrealized_plpc or 0) * 100  # positive = gain, negative = loss
+
+        # Max-loss exit — no RSI data needed
+        if plpc < -config.MAX_LOSS_PCT:
+            reason = f"loss {abs(plpc):.1f}% exceeds max {config.MAX_LOSS_PCT:.0f}%"
+            log.info("[intraday] %s — %s, closing", symbol, reason)
+            try:
+                cancel_open_orders(client, symbol, log)
+                client.close_position(symbol)
+                pl = str(pos.unrealized_pl)
+                log.info("[intraday] ✅ Closed %s | P&L=%s", symbol, pl)
+                closed.append({"symbol": symbol, "intraday_rsi": None,
+                                "unrealized_pl": pl, "reason": reason})
+            except Exception as exc:
+                log_api_error(log, f"[intraday] ❌ Failed to close {symbol}", exc)
+            continue
+
         df = bars_map.get(symbol)
 
         if df is None:
@@ -83,26 +100,33 @@ def run_intraday_check() -> list[dict]:
             log.warning("[intraday] %s — RSI compute failed: %s", symbol, exc)
             continue
 
-        log.debug("[intraday] %s | 15-min RSI=%.1f | bars=%d", symbol, intraday_rsi, len(df))
+        log.debug("[intraday] %s | 15-min RSI=%.1f | P&L=%.1f%% | bars=%d",
+                  symbol, intraday_rsi, plpc, len(df))
 
-        if intraday_rsi <= RSI_OVERBOUGHT:
-            log.debug("[intraday] %s — RSI %.1f within range, holding", symbol, intraday_rsi)
+        close_reason = None
+        if intraday_rsi > RSI_OVERBOUGHT:
+            close_reason = f"15-min RSI={intraday_rsi:.1f} > {RSI_OVERBOUGHT} (overbought)"
+        elif plpc >= config.MIN_GAIN_TAKE_PCT and intraday_rsi < 50:
+            close_reason = (f"gain {plpc:.1f}% with fading momentum "
+                            f"(RSI={intraday_rsi:.1f} < 50)")
+
+        if close_reason is None:
+            log.debug("[intraday] %s — holding (RSI=%.1f, P&L=%.1f%%)",
+                      symbol, intraday_rsi, plpc)
             continue
 
-        log.info("[intraday] %s — RSI %.1f > %d (overbought on 15-min), closing position",
-                 symbol, intraday_rsi, RSI_OVERBOUGHT)
-
+        log.info("[intraday] %s — %s, closing", symbol, close_reason)
         try:
             cancel_open_orders(client, symbol, log)
             client.close_position(symbol)
             pl = str(pos.unrealized_pl)
-            log.info("[intraday] ✅ Closed %s | intraday RSI=%.1f | unrealized P&L=%s",
+            log.info("[intraday] ✅ Closed %s | intraday RSI=%.1f | P&L=%s",
                      symbol, intraday_rsi, pl)
             closed.append({
                 "symbol":       symbol,
                 "intraday_rsi": intraday_rsi,
                 "unrealized_pl": pl,
-                "reason":       f"15-min RSI={intraday_rsi:.1f} > {RSI_OVERBOUGHT}",
+                "reason":       close_reason,
             })
         except Exception as exc:
             log_api_error(log, f"[intraday] ❌ Failed to close {symbol}", exc)
