@@ -12,7 +12,7 @@ Positions not found in today's signals are left untouched (logged as warning).
 import logging
 
 import config
-from trader._utils import cancel_open_orders, log_api_error
+from trader._utils import close_position_with_retry, log_api_error
 
 log = logging.getLogger("trader.monitor")
 
@@ -84,9 +84,10 @@ def check_and_exit(signals: dict) -> list[dict]:
         log.info("[monitor] Closing %s — %s", symbol, reason_str)
 
         try:
-            cancel_open_orders(client, symbol, log)
-            client.close_position(symbol)
+            close_position_with_retry(client, symbol, log)
             log.info("[monitor] ✅ Closed %s | P&L: %s", symbol, pos.unrealized_pl)
+            from trader.trade_recorder import record_manual_close
+            record_manual_close(pos, " | ".join(reasons))
             closed.append({
                 "symbol":     symbol,
                 "reasons":    reasons,

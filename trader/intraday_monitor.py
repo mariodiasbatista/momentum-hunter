@@ -15,7 +15,7 @@ import logging
 import pandas_ta as ta
 
 import config
-from trader._utils import cancel_open_orders, log_api_error
+from trader._utils import close_position_with_retry, log_api_error
 
 log = logging.getLogger("trader.intraday")
 
@@ -77,10 +77,11 @@ def run_intraday_check() -> list[dict]:
             reason = f"loss {abs(plpc):.1f}% exceeds max {config.MAX_LOSS_PCT:.0f}%"
             log.info("[intraday] %s — %s, closing", symbol, reason)
             try:
-                cancel_open_orders(client, symbol, log)
-                client.close_position(symbol)
+                close_position_with_retry(client, symbol, log)
                 pl = str(pos.unrealized_pl)
                 log.info("[intraday] ✅ Closed %s | P&L=%s", symbol, pl)
+                from trader.trade_recorder import record_manual_close
+                record_manual_close(pos, reason)
                 closed.append({"symbol": symbol, "intraday_rsi": None,
                                 "unrealized_pl": pl, "reason": reason})
             except Exception as exc:
@@ -117,11 +118,12 @@ def run_intraday_check() -> list[dict]:
 
         log.info("[intraday] %s — %s, closing", symbol, close_reason)
         try:
-            cancel_open_orders(client, symbol, log)
-            client.close_position(symbol)
+            close_position_with_retry(client, symbol, log)
             pl = str(pos.unrealized_pl)
             log.info("[intraday] ✅ Closed %s | intraday RSI=%.1f | P&L=%s",
                      symbol, intraday_rsi, pl)
+            from trader.trade_recorder import record_manual_close
+            record_manual_close(pos, close_reason)
             closed.append({
                 "symbol":       symbol,
                 "intraday_rsi": intraday_rsi,

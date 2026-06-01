@@ -55,6 +55,11 @@ def _notified_today() -> set:
     return {t["symbol"] for t in _load_trades().get(today, []) if t.get("notified")}
 
 
+def _recorded_today() -> set:
+    today = date.today().isoformat()
+    return {t["symbol"] for t in _load_trades().get(today, [])}
+
+
 def _save_trade(trade: dict) -> None:
     today = date.today().isoformat()
     try:
@@ -68,28 +73,52 @@ def _save_trade(trade: dict) -> None:
 
 # ── Main scan ────────────────────────────────────────────────────────────────
 
+def record_manual_close(pos, reason: str) -> dict:
+    """Record a close executed directly by a monitor (not via broker TP/SL).
+
+    Uses the position object's current data as the exit snapshot. Skips if
+    this symbol was already recorded today (avoids double-counting).
+    Returns the trade dict, or {} if skipped.
+    """
+    symbol = pos.symbol
+    if symbol in _recorded_today():
+        log.debug("[recorder] %s already recorded today, skipping", symbol)
+        return {}
+
+    qty         = int(float(pos.qty or 1))
+    entry_price = float(pos.avg_entry_price or 0)
+    exit_price  = float(pos.current_price or 0)
+    pnl         = float(pos.unrealized_pl or 0)
+    pnl_pct     = float(pos.unrealized_plpc or 0) * 100
+
+    trade = {
+        "symbol":      symbol,
+        "entry_price": entry_price,
+        "exit_price":  exit_price,
+        "qty":         qty,
+        "reason":      reason,
+        "pnl":         round(pnl, 2),
+        "pnl_pct":     round(pnl_pct, 2),
+        "exited_at":   datetime.now(timezone.utc).isoformat(),
+        "notified":    True,
+    }
+    _save_trade(trade)
+    log.info("[recorder] Recorded close: %s | %s | P&L $%.2f (%.1f%%)",
+             symbol, reason, pnl, pnl_pct)
+    return trade
+
+
 def scan_for_fills() -> list[dict]:
     """
-    Fetch today's closed SELL orders from Alpaca.
-    Match against our placed orders, compute P&L, save and return new fills.
-    Deduplicates — symbols already notified today are skipped.
+    Fetch today's closed SELL orders from Alpaca (broker-initiated TP/SL fills).
+    Looks up entry price across all order dates, not just today's buys.
+    Deduplicates — symbols already recorded today are skipped.
     """
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus, OrderSide
-    from trader.order_placer import load_orders_today
+    from trader.order_placer import load_entry_for_symbol
 
-    our_orders = load_orders_today()
-    if not our_orders:
-        log.debug("[recorder] No orders placed today — skipping fill scan")
-        return []
-
-    already_notified = _notified_today()
-    pending = set(our_orders.keys()) - already_notified
-    if not pending:
-        log.debug("[recorder] All orders already notified — skipping fill scan")
-        return []
-
-    log.debug("[recorder] Scanning fills for: %s", ", ".join(sorted(pending)))
+    already_recorded = _recorded_today()
 
     client = _get_client()
     try:
@@ -112,15 +141,15 @@ def scan_for_fills() -> list[dict]:
     for order in closed_sells:
         symbol = order.symbol
 
-        if symbol not in pending:
-            log.debug("[recorder] %s — not in our pending orders, skipping", symbol)
+        if symbol in already_recorded:
+            log.debug("[recorder] %s — already recorded today, skipping", symbol)
             continue
 
         if str(order.status) != "filled" or not order.filled_avg_price:
             log.debug("[recorder] %s — status=%s, not filled, skipping", symbol, order.status)
             continue
 
-        order_details = our_orders.get(symbol, {})
+        order_details = load_entry_for_symbol(symbol) or {}
         entry_price  = float(order_details.get("entry_price", 0.0))
         qty          = int(float(order.qty or order_details.get("qty", 1)))
         exit_price   = float(order.filled_avg_price)

@@ -1,5 +1,6 @@
 """Shared utilities for trader modules."""
 import logging
+import time
 
 _log = logging.getLogger("trader.utils")
 
@@ -50,3 +51,22 @@ def cancel_open_orders(client, symbol: str, log=None) -> int:
     except Exception as exc:
         _l.warning("[utils] %s — failed to fetch orders before close: %s", symbol, exc)
         return 0
+
+
+def close_position_with_retry(client, symbol: str, log=None) -> None:
+    """Cancel open orders then close position, retrying once if shares are still locked.
+
+    Alpaca can briefly keep shares in 'held_for_orders' after a cancel — a short
+    wait and one retry resolves the 'insufficient qty available' race condition.
+    """
+    _l = log or _log
+    cancel_open_orders(client, symbol, _l)
+    try:
+        client.close_position(symbol)
+    except Exception as exc:
+        if "insufficient qty" in str(exc).lower():
+            _l.debug("[utils] %s — shares still settling after cancel, retrying in 1s", symbol)
+            time.sleep(1.0)
+            client.close_position(symbol)
+        else:
+            raise
