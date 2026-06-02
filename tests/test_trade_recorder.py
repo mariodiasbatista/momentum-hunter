@@ -26,16 +26,20 @@ def _today():
     return date.today().isoformat()
 
 
-def _orders_data(symbol="AAPL", qty=10, entry=150.0, stop=147.0, take=153.0):
-    return {_today(): {symbol: {"qty": qty, "entry_price": entry,
-                                "stop_price": stop, "take_price": take,
-                                "exit_mode": "trailing_stop"}}}
+def _entry_map(symbol="AAPL", qty=10, entry=150.0, stop=147.0, take=153.0):
+    """Return {symbol: order_details} — the shape load_entry_for_symbol returns."""
+    return {symbol: {"qty": qty, "entry_price": entry,
+                     "stop_price": stop, "take_price": take,
+                     "exit_mode": "trailing_stop"}}
 
 
 # ── scan_for_fills ────────────────────────────────────────────────────────────
 
 class TestScanForFills:
-    def _run(self, closed_orders, orders_data, trades_data=None, tmp_path=None):
+    def _run(self, closed_orders, entry_map, trades_data=None, tmp_path=None):
+        """
+        entry_map: {symbol: entry_details} — what load_entry_for_symbol returns per symbol.
+        """
         trades_file = tmp_path / "trades.json" if tmp_path else Path("/tmp/trades_noop.json")
         if trades_data and tmp_path:
             trades_file.write_text(json.dumps(trades_data))
@@ -43,56 +47,70 @@ class TestScanForFills:
         mock_client = MagicMock()
         mock_client.get_orders.return_value = closed_orders
 
+        def fake_entry(symbol):
+            return entry_map.get(symbol)
+
         with patch("trader.trade_recorder._get_client", return_value=mock_client), \
-             patch("trader.order_placer.load_orders_today", return_value=orders_data.get(_today(), {})), \
+             patch("trader.order_placer.load_entry_for_symbol", side_effect=fake_entry), \
              patch("trader.trade_recorder._TRADES_FILE", trades_file):
             from trader.trade_recorder import scan_for_fills
             return scan_for_fills()
 
     def test_detects_take_profit_fill(self, tmp_path):
         order = _mock_order("AAPL", order_type="limit", filled_avg_price=153.0)
-        fills = self._run([order], _orders_data("AAPL", entry=150.0), tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL", entry=150.0), tmp_path=tmp_path)
         assert len(fills) == 1
         assert fills[0]["reason"] == "take_profit"
 
     def test_detects_stop_loss_fill(self, tmp_path):
         order = _mock_order("AAPL", order_type="stop", filled_avg_price=147.0)
-        fills = self._run([order], _orders_data("AAPL", entry=150.0), tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL", entry=150.0), tmp_path=tmp_path)
         assert len(fills) == 1
         assert fills[0]["reason"] == "stop_loss"
 
     def test_computes_pnl_correctly_for_profit(self, tmp_path):
         order = _mock_order("AAPL", order_type="limit", filled_avg_price=153.0, qty=10)
-        fills = self._run([order], _orders_data("AAPL", qty=10, entry=150.0), tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL", qty=10, entry=150.0), tmp_path=tmp_path)
         assert fills[0]["pnl"] == pytest.approx(30.0)
         assert fills[0]["pnl_pct"] == pytest.approx(2.0)
 
     def test_computes_pnl_correctly_for_loss(self, tmp_path):
         order = _mock_order("AAPL", order_type="stop", filled_avg_price=147.0, qty=10)
-        fills = self._run([order], _orders_data("AAPL", qty=10, entry=150.0), tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL", qty=10, entry=150.0), tmp_path=tmp_path)
         assert fills[0]["pnl"] == pytest.approx(-30.0)
         assert fills[0]["pnl_pct"] == pytest.approx(-2.0)
 
-    def test_skips_symbol_not_in_our_orders(self, tmp_path):
+    def test_records_fill_with_zero_entry_when_symbol_not_found(self, tmp_path):
+        # scan_for_fills no longer skips unknown symbols — records with entry=0, pnl=None
         order = _mock_order("NVDA", order_type="limit", filled_avg_price=900.0)
-        fills = self._run([order], _orders_data("AAPL"), tmp_path=tmp_path)
-        assert len(fills) == 0
+        fills = self._run([order], {}, tmp_path=tmp_path)
+        assert len(fills) == 1
+        assert fills[0]["entry_price"] == 0.0
+        assert fills[0]["pnl"] is None
+
+    def test_uses_entry_from_any_date_not_just_today(self, tmp_path):
+        # load_entry_for_symbol searches all dates — simulate old entry found
+        order = _mock_order("AAPL", order_type="limit", filled_avg_price=153.0, qty=5)
+        old_entry = {"qty": 5, "entry_price": 150.0, "stop_price": 147.0,
+                     "take_price": 155.0, "exit_mode": "trailing_stop"}
+        fills = self._run([order], {"AAPL": old_entry}, tmp_path=tmp_path)
+        assert fills[0]["pnl"] == pytest.approx(15.0)
 
     def test_skips_unfilled_orders(self, tmp_path):
         order = _mock_order("AAPL", order_type="limit", filled_avg_price=None, status="cancelled")
         order.filled_avg_price = None
-        fills = self._run([order], _orders_data("AAPL"), tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL"), tmp_path=tmp_path)
         assert len(fills) == 0
 
-    def test_skips_already_notified_symbols(self, tmp_path):
+    def test_skips_already_recorded_symbols(self, tmp_path):
         trades_data = {_today(): [{"symbol": "AAPL", "notified": True, "reason": "take_profit",
                                    "entry_price": 150.0, "exit_price": 153.0, "qty": 10,
                                    "pnl": 30.0, "pnl_pct": 2.0, "exited_at": "..."}]}
         order = _mock_order("AAPL", order_type="limit", filled_avg_price=153.0)
-        fills = self._run([order], _orders_data("AAPL"), trades_data=trades_data, tmp_path=tmp_path)
+        fills = self._run([order], _entry_map("AAPL"), trades_data=trades_data, tmp_path=tmp_path)
         assert len(fills) == 0
 
-    def test_returns_empty_when_no_orders_placed_today(self, tmp_path):
+    def test_returns_empty_when_no_closed_orders(self, tmp_path):
         fills = self._run([], {}, tmp_path=tmp_path)
         assert fills == []
 
@@ -100,8 +118,7 @@ class TestScanForFills:
         mock_client = MagicMock()
         mock_client.get_orders.side_effect = Exception("timeout")
         with patch("trader.trade_recorder._get_client", return_value=mock_client), \
-             patch("trader.order_placer.load_orders_today",
-                   return_value=_orders_data().get(_today(), {})), \
+             patch("trader.order_placer.load_entry_for_symbol", return_value=None), \
              patch("trader.trade_recorder._TRADES_FILE", tmp_path / "t.json"):
             from trader.trade_recorder import scan_for_fills
             result = scan_for_fills()
@@ -109,12 +126,79 @@ class TestScanForFills:
 
     def test_saves_trade_to_file(self, tmp_path):
         order = _mock_order("AAPL", order_type="limit", filled_avg_price=153.0)
-        self._run([order], _orders_data("AAPL", entry=150.0), tmp_path=tmp_path)
+        self._run([order], _entry_map("AAPL", entry=150.0), tmp_path=tmp_path)
         trades_file = tmp_path / "trades.json"
         assert trades_file.exists()
         saved = json.loads(trades_file.read_text())
         assert len(saved[_today()]) == 1
         assert saved[_today()][0]["symbol"] == "AAPL"
+
+
+# ── record_manual_close ───────────────────────────────────────────────────────
+
+class TestRecordManualClose:
+    def _mock_pos(self, symbol, plpc="0.05", pl="50.0",
+                  current_price="105.0", entry="100.0", qty="10"):
+        pos = MagicMock()
+        pos.symbol = symbol
+        pos.unrealized_plpc = plpc
+        pos.unrealized_pl = pl
+        pos.current_price = current_price
+        pos.avg_entry_price = entry
+        pos.qty = qty
+        return pos
+
+    def test_records_close_to_file(self, tmp_path):
+        trades_file = tmp_path / "trades.json"
+        pos = self._mock_pos("AAPL")
+        with patch("trader.trade_recorder._TRADES_FILE", trades_file):
+            from trader.trade_recorder import record_manual_close
+            result = record_manual_close(pos, "RSI overbought")
+        assert result["symbol"] == "AAPL"
+        assert result["reason"] == "RSI overbought"
+        assert result["notified"] is True
+        saved = json.loads(trades_file.read_text())
+        assert len(saved[_today()]) == 1
+        assert saved[_today()][0]["symbol"] == "AAPL"
+
+    def test_skips_if_already_recorded_today(self, tmp_path):
+        trades_file = tmp_path / "trades.json"
+        existing = {_today(): [{"symbol": "AAPL", "reason": "earlier close", "notified": True,
+                                "pnl": 10.0, "pnl_pct": 5.0, "entry_price": 100.0,
+                                "exit_price": 105.0, "qty": 10,
+                                "exited_at": "2026-06-02T10:00:00+00:00"}]}
+        trades_file.write_text(json.dumps(existing))
+        pos = self._mock_pos("AAPL")
+        with patch("trader.trade_recorder._TRADES_FILE", trades_file):
+            from trader.trade_recorder import record_manual_close
+            result = record_manual_close(pos, "second close attempt")
+        assert result == {}
+        saved = json.loads(trades_file.read_text())
+        assert len(saved[_today()]) == 1  # still just 1
+
+    def test_computes_pnl_from_position_fields(self, tmp_path):
+        trades_file = tmp_path / "trades.json"
+        pos = self._mock_pos("MSFT", plpc="0.10", pl="100.0",
+                             current_price="110.0", entry="100.0", qty="10")
+        with patch("trader.trade_recorder._TRADES_FILE", trades_file):
+            from trader.trade_recorder import record_manual_close
+            result = record_manual_close(pos, "test reason")
+        assert result["pnl"] == pytest.approx(100.0)
+        assert result["pnl_pct"] == pytest.approx(10.0)
+        assert result["entry_price"] == pytest.approx(100.0)
+        assert result["exit_price"] == pytest.approx(110.0)
+        assert result["qty"] == 10
+
+    def test_different_symbols_can_both_be_recorded(self, tmp_path):
+        trades_file = tmp_path / "trades.json"
+        with patch("trader.trade_recorder._TRADES_FILE", trades_file):
+            from trader.trade_recorder import record_manual_close
+            record_manual_close(self._mock_pos("AAPL"), "reason A")
+            record_manual_close(self._mock_pos("MSFT"), "reason B")
+        saved = json.loads(trades_file.read_text())
+        symbols = [t["symbol"] for t in saved[_today()]]
+        assert "AAPL" in symbols
+        assert "MSFT" in symbols
 
 
 # ── send_fill_notifications ───────────────────────────────────────────────────

@@ -6,6 +6,7 @@ Tests for the full trade execution layer:
 """
 import json
 import logging
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -48,10 +49,15 @@ class TestIsTransient:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _mock_position(symbol="AAPL", unrealized_pl="50.00"):
+def _mock_position(symbol="AAPL", unrealized_pl="50.00", unrealized_plpc="0.0",
+                   current_price="105.0", avg_entry_price="100.0", qty="10"):
     pos = MagicMock()
     pos.symbol = symbol
     pos.unrealized_pl = unrealized_pl
+    pos.unrealized_plpc = unrealized_plpc
+    pos.current_price = current_price
+    pos.avg_entry_price = avg_entry_price
+    pos.qty = qty
     return pos
 
 
@@ -320,6 +326,71 @@ class TestPlaceOrders:
         import config
         assert client.submit_order.call_count <= config.AUTO_ORDER_TOP_N
 
+    def test_retries_with_adjusted_stop_on_42210000(self, tmp_path):
+        error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
+        retry_order = _mock_order()
+        mock_client = MagicMock()
+        mock_client.get_all_positions.return_value = []
+        mock_client.submit_order.side_effect = [Exception(error_msg), retry_order]
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(price=25.0, atr_min=0.5)])
+        assert len(placed) == 1
+        assert mock_client.submit_order.call_count == 2
+        assert placed[0]["stop_price"] == pytest.approx(24.98)  # floor(25.00 - 0.02)
+
+    def test_retry_failure_skips_symbol(self, tmp_path, caplog):
+        error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
+        mock_client = MagicMock()
+        mock_client.get_all_positions.return_value = []
+        mock_client.submit_order.side_effect = [Exception(error_msg), Exception("rejected again")]
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+            with caplog.at_level(logging.ERROR, logger="trader.orders"):
+                from trader.order_placer import place_orders
+                placed = place_orders([_candidate(price=25.0)])
+        assert len(placed) == 0
+
+
+# ── _stop_from_fill_error ─────────────────────────────────────────────────────
+
+class TestStopFromFillError:
+    def _call(self, msg):
+        from trader.order_placer import _stop_from_fill_error
+        return _stop_from_fill_error(Exception(msg))
+
+    def test_returns_none_for_non_42210000_error(self):
+        assert self._call("some other error 500") is None
+
+    def test_returns_none_when_no_base_price_in_body(self):
+        assert self._call("{code:42210000,message:stop too high}") is None
+
+    def test_parses_base_price_with_double_quotes(self):
+        result = self._call('{"base_price":"108.64","code":42210000}')
+        expected = math.floor((108.64 - 0.02) * 100) / 100
+        assert result == pytest.approx(expected)
+
+    def test_parses_base_price_without_quotes(self):
+        result = self._call('{"base_price":108.64,"code":42210000}')
+        assert result is not None
+        assert result < 108.64
+
+    def test_parses_baseprice_key_variant(self):
+        result = self._call('{"baseprice":"18.5424","code":42210000}')
+        assert result is not None
+        assert result < 18.5424
+
+    def test_result_is_at_least_two_cents_below_fill(self):
+        result = self._call('{"base_price":"50.00","code":42210000}')
+        assert result <= 50.00 - 0.02
+
 
 # ── send_order_summary ───────────────────────────────────────────────────────
 
@@ -351,7 +422,10 @@ class TestCheckAndExit:
     def _run(self, positions, signals_map):
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = positions
-        with patch("trader.position_monitor._get_client", return_value=mock_client):
+        mock_client.get_orders.return_value = []
+        with patch("trader.position_monitor._get_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}):
             from trader.position_monitor import check_and_exit
             return check_and_exit(signals_map), mock_client
 
@@ -393,8 +467,11 @@ class TestCheckAndExit:
         sig = _signal("FAIL", exit_mode="fixed_take_profit")
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = [pos]
+        mock_client.get_orders.return_value = []
         mock_client.close_position.side_effect = Exception("rejected")
-        with patch("trader.position_monitor._get_client", return_value=mock_client):
+        with patch("trader.position_monitor._get_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}):
             with caplog.at_level(logging.ERROR, logger="trader.monitor"):
                 from trader.position_monitor import check_and_exit
                 closed = check_and_exit({"FAIL": sig})
@@ -404,7 +481,8 @@ class TestCheckAndExit:
     def test_handles_position_fetch_error(self, caplog):
         mock_client = MagicMock()
         mock_client.get_all_positions.side_effect = Exception("timeout")
-        with patch("trader.position_monitor._get_client", return_value=mock_client):
+        with patch("trader.position_monitor._get_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]):
             with caplog.at_level(logging.ERROR, logger="trader.monitor"):
                 from trader.position_monitor import check_and_exit
                 closed = check_and_exit({})
@@ -415,6 +493,20 @@ class TestCheckAndExit:
         sig = _signal("SAFE", exit_mode="trailing_stop", rsi=60.0, warning_count=1)
         closed, client = self._run([pos], {"SAFE": sig})
         assert len(closed) == 0
+
+    def test_closes_on_max_loss_exceeded(self):
+        pos = _mock_position("AAPL", unrealized_plpc="-0.06")  # -6% > MAX_LOSS_PCT=5%
+        sig = _signal("AAPL", exit_mode="trailing_stop", rsi=60.0)
+        closed, _ = self._run([pos], {"AAPL": sig})
+        assert len(closed) == 1
+        assert any("loss" in r.lower() for r in closed[0]["reasons"])
+
+    def test_closes_on_min_gain_at_eod(self):
+        pos = _mock_position("AAPL", unrealized_plpc="0.09")  # 9% >= MIN_GAIN_TAKE_PCT=8%
+        sig = _signal("AAPL", exit_mode="trailing_stop", rsi=60.0)
+        closed, _ = self._run([pos], {"AAPL": sig})
+        assert len(closed) == 1
+        assert any("gain" in r.lower() for r in closed[0]["reasons"])
 
 
 # ── send_monitor_summary ─────────────────────────────────────────────────────
@@ -450,6 +542,7 @@ class TestIntradayMonitor:
     def _run(self, positions, bars_map, rsi_values=None):
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = positions
+        mock_client.get_orders.return_value = []
 
         def fake_rsi(series, length):
             vals = rsi_values or [60.0] * 5
@@ -457,7 +550,9 @@ class TestIntradayMonitor:
 
         with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
              patch("data.alpaca_client.fetch_intraday_bars", return_value=bars_map), \
-             patch("trader.intraday_monitor.ta.rsi", side_effect=fake_rsi):
+             patch("trader.intraday_monitor.ta.rsi", side_effect=fake_rsi), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}):
             from trader.intraday_monitor import run_intraday_check
             closed = run_intraday_check()
 
@@ -466,7 +561,8 @@ class TestIntradayMonitor:
     def test_no_positions_returns_empty(self):
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = []
-        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client):
+        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]):
             from trader.intraday_monitor import run_intraday_check
             assert run_intraday_check() == []
 
@@ -498,7 +594,8 @@ class TestIntradayMonitor:
     def test_handles_transient_position_fetch_error(self, caplog):
         mock_client = MagicMock()
         mock_client.get_all_positions.side_effect = Exception("connection refused")
-        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client):
+        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]):
             with caplog.at_level(logging.WARNING, logger="trader.intraday"):
                 from trader.intraday_monitor import run_intraday_check
                 result = run_intraday_check()
@@ -508,7 +605,8 @@ class TestIntradayMonitor:
     def test_handles_real_position_fetch_error(self, caplog):
         mock_client = MagicMock()
         mock_client.get_all_positions.side_effect = Exception("403 forbidden")
-        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client):
+        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]):
             with caplog.at_level(logging.ERROR, logger="trader.intraday"):
                 from trader.intraday_monitor import run_intraday_check
                 result = run_intraday_check()
@@ -519,13 +617,16 @@ class TestIntradayMonitor:
         pos = _mock_position("FAIL")
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = [pos]
+        mock_client.get_orders.return_value = []
         mock_client.close_position.side_effect = Exception("rejected")
 
         with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
              patch("data.alpaca_client.fetch_intraday_bars",
                    return_value={"FAIL": _make_bars()}), \
              patch("trader.intraday_monitor.ta.rsi",
-                   return_value=pd.Series([75.0])):
+                   return_value=pd.Series([75.0])), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}):
             with caplog.at_level(logging.ERROR, logger="trader.intraday"):
                 from trader.intraday_monitor import run_intraday_check
                 closed = run_intraday_check()
@@ -544,14 +645,36 @@ class TestIntradayMonitor:
 
         mock_client = MagicMock()
         mock_client.get_all_positions.return_value = positions
+        mock_client.get_orders.return_value = []
         with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
              patch("data.alpaca_client.fetch_intraday_bars", return_value=bars), \
-             patch("trader.intraday_monitor.ta.rsi", side_effect=rsi_by_symbol):
+             patch("trader.intraday_monitor.ta.rsi", side_effect=rsi_by_symbol), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}):
             from trader.intraday_monitor import run_intraday_check
             closed = run_intraday_check()
 
         assert len(closed) == 1
         assert closed[0]["symbol"] == "HIGH"
+
+    def test_closes_on_max_loss_exceeded(self):
+        pos = _mock_position("AAPL", unrealized_plpc="-0.06")  # -6% > MAX_LOSS_PCT=5%
+        closed, _ = self._run([pos], {"AAPL": _make_bars()})
+        assert len(closed) == 1
+        assert "loss" in closed[0]["reason"]
+
+    def test_holds_on_min_gain_with_rising_rsi(self):
+        pos = _mock_position("AAPL", unrealized_plpc="0.09")  # 9% >= MIN_GAIN_TAKE_PCT=8%
+        # RSI >= 50 → hold (momentum still good)
+        closed, _ = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[55.0])
+        assert len(closed) == 0
+
+    def test_closes_on_min_gain_with_fading_momentum(self):
+        pos = _mock_position("AAPL", unrealized_plpc="0.09")  # 9% >= MIN_GAIN_TAKE_PCT=8%
+        # RSI < 50 → close (momentum fading)
+        closed, _ = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[45.0])
+        assert len(closed) == 1
+        assert "fading momentum" in closed[0]["reason"]
 
 
 # ── send_intraday_summary ─────────────────────────────────────────────────────
@@ -574,3 +697,83 @@ class TestSendIntradaySummary:
             assert "AAPL" in text
             assert "35.00" in text
             assert "74.5" in text
+
+
+# ── cancel_open_orders ────────────────────────────────────────────────────────
+
+class TestCancelOpenOrders:
+    def _make_order(self, order_id="ord-1"):
+        o = MagicMock()
+        o.id = order_id
+        return o
+
+    def test_cancels_all_open_orders(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = [self._make_order("a"), self._make_order("b")]
+        from trader._utils import cancel_open_orders
+        count = cancel_open_orders(mock_client, "AAPL")
+        assert count == 2
+        assert mock_client.cancel_order_by_id.call_count == 2
+
+    def test_returns_zero_when_no_open_orders(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        from trader._utils import cancel_open_orders
+        count = cancel_open_orders(mock_client, "AAPL")
+        assert count == 0
+        mock_client.cancel_order_by_id.assert_not_called()
+
+    def test_handles_cancel_error_gracefully(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = [self._make_order()]
+        mock_client.cancel_order_by_id.side_effect = Exception("already cancelled")
+        from trader._utils import cancel_open_orders
+        count = cancel_open_orders(mock_client, "AAPL")  # must not raise
+        assert count == 1  # order was in the list
+
+    def test_handles_get_orders_error_gracefully(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.side_effect = Exception("timeout")
+        from trader._utils import cancel_open_orders
+        count = cancel_open_orders(mock_client, "AAPL")
+        assert count == 0
+
+
+# ── close_position_with_retry ─────────────────────────────────────────────────
+
+class TestClosePositionWithRetry:
+    def test_cancels_orders_then_closes(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        from trader._utils import close_position_with_retry
+        close_position_with_retry(mock_client, "AAPL")
+        mock_client.close_position.assert_called_once_with("AAPL")
+
+    def test_retries_once_on_insufficient_qty(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.close_position.side_effect = [
+            Exception("insufficient qty available"), None
+        ]
+        with patch("time.sleep"):
+            from trader._utils import close_position_with_retry
+            close_position_with_retry(mock_client, "AAPL")
+        assert mock_client.close_position.call_count == 2
+
+    def test_raises_on_non_retryable_error(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.close_position.side_effect = Exception("position not found")
+        from trader._utils import close_position_with_retry
+        with pytest.raises(Exception, match="position not found"):
+            close_position_with_retry(mock_client, "AAPL")
+
+    def test_cancels_bracket_legs_before_close(self):
+        o = MagicMock()
+        o.id = "bracket-leg-1"
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = [o]
+        from trader._utils import close_position_with_retry
+        close_position_with_retry(mock_client, "AAPL")
+        mock_client.cancel_order_by_id.assert_called_once_with("bracket-leg-1")
+        mock_client.close_position.assert_called_once_with("AAPL")
