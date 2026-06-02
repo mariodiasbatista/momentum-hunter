@@ -14,6 +14,7 @@ Buy rules (Execution v1 — 2026-05-22):
 import json
 import logging
 import math
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -147,6 +148,31 @@ def _record_order(symbol: str, qty: int, entry_price: float,
         pass
 
 
+# ── Order placement helpers ──────────────────────────────────────────────────
+
+def _stop_from_fill_error(exc: Exception) -> float | None:
+    """Parse a 42210000 stop-rejection error and return a safe stop below the fill.
+
+    Alpaca bracket orders are validated against the actual fill price (base_price),
+    which can differ from the ask we computed the stop from. When rejected, the
+    broker returns the fill price so we can anchor a corrected stop to it.
+    Returns floor(base_price - 0.02, 2 decimals) or None if not a stop error.
+    """
+    s = str(exc)
+    if "42210000" not in s:
+        return None
+    for key in ("base_price", "baseprice"):
+        m = re.search(rf'"{key}"\s*:\s*"?([0-9.]+)"?', s)
+        if m:
+            try:
+                base = float(m.group(1))
+                # 2 cents below fill guarantees stop <= fill - 0.01
+                return max(math.floor((base - 0.02) * 100) / 100, 0.01)
+            except Exception:
+                pass
+    return None
+
+
 # ── Order placement ──────────────────────────────────────────────────────────
 
 def place_orders(candidates: list[dict]) -> list[dict]:
@@ -242,6 +268,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.debug("[orders] %s | ask $%.2f | last_close $%.2f | qty %d | stop $%.2f | tp $%.2f | mode=%s",
                   symbol, market_price, last_close, qty, stop_price, take_price, exit_mode)
 
+        final_stop = stop_price
         try:
             order = client.submit_order(MarketOrderRequest(
                 symbol=symbol,
@@ -252,24 +279,46 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 stop_loss=StopLossRequest(stop_price=stop_price),
                 take_profit=TakeProfitRequest(limit_price=take_price),
             ))
-            _record_order(symbol, qty, market_price, stop_price, take_price, exit_mode)
-            log.info("[orders] ✅ %s x%d | entry mkt | stop $%.2f | tp $%.2f | %s | mode=%s",
-                     symbol, qty, stop_price, take_price, position_label(market_price), exit_mode)
-            placed.append({
-                "symbol":     symbol,
-                "qty":        qty,
-                "price":      market_price,
-                "stop_price": stop_price,
-                "take_price": take_price,
-                "exit_mode":  exit_mode,
-                "pos_label":  position_label(market_price),
-                "order_id":   str(order.id),
-            })
         except Exception as exc:
-            if "not found" in str(exc).lower():
+            # Ask price can be inflated vs actual fill — retry once anchored to fill
+            adj_stop = _stop_from_fill_error(exc)
+            if adj_stop is not None:
+                log.info("[orders] %s — stop $%.2f rejected (ask/fill gap), retrying at $%.2f",
+                         symbol, stop_price, adj_stop)
+                try:
+                    order = client.submit_order(MarketOrderRequest(
+                        symbol=symbol,
+                        qty=qty,
+                        side=OrderSide.BUY,
+                        time_in_force=TimeInForce.GTC,
+                        order_class=OrderClass.BRACKET,
+                        stop_loss=StopLossRequest(stop_price=adj_stop),
+                        take_profit=TakeProfitRequest(limit_price=take_price),
+                    ))
+                    final_stop = adj_stop
+                except Exception as retry_exc:
+                    log_api_error(log, f"[orders] ❌ Failed to place order for {symbol} (retry)", retry_exc)
+                    continue
+            elif "not found" in str(exc).lower():
                 log.warning("[orders] %s — asset not available on Alpaca, skipping: %s", symbol, exc)
+                continue
             else:
                 log_api_error(log, f"[orders] ❌ Failed to place order for {symbol}", exc)
+                continue
+
+        _record_order(symbol, qty, market_price, final_stop, take_price, exit_mode)
+        log.info("[orders] ✅ %s x%d | entry mkt | stop $%.2f | tp $%.2f | %s | mode=%s",
+                 symbol, qty, final_stop, take_price, position_label(market_price), exit_mode)
+        placed.append({
+            "symbol":     symbol,
+            "qty":        qty,
+            "price":      market_price,
+            "stop_price": final_stop,
+            "take_price": take_price,
+            "exit_mode":  exit_mode,
+            "pos_label":  position_label(market_price),
+            "order_id":   str(order.id),
+        })
 
     log.info("[orders] Done — %d placed, %d skipped", len(placed),
              len(candidates[:config.AUTO_ORDER_TOP_N]) - len(placed))
