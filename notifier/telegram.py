@@ -45,7 +45,8 @@ def _format_candidate(rank: int, c: dict) -> str:
     }
     signal_line = " ".join(f"{'✅' if criteria[k] else '❌'}{v}" for k, v in checks.items())
 
-    exit_label = "🟢 Trailing Stop" if exit_mode == "trailing_stop" else "🔴 Fixed Take-Profit"
+    is_watch_only = exit_mode == "fixed_take_profit"
+    exit_label = "🟢 Trailing Stop" if not is_watch_only else "👁 Watch Only — Fixed TP"
     warn_text = f"\n⚠️ {', '.join(warnings)}" if warnings else ""
 
     days = c.get("days_in_scan", 1)
@@ -55,16 +56,19 @@ def _format_candidate(rank: int, c: dict) -> str:
     qty = position_qty(close)
     pos = position_label(close)
 
-    # Mirror the bracket order price levels
+    # Mirror the bracket order price levels (trailing_stop only — watch-only skips order)
     stop_price = round(min(close - atr_min, close * 0.99), 2)
-    take_price = round(close + atr_max * 2, 2) if exit_mode == "trailing_stop" else round(close + atr_max, 2)
+    take_price = round(close + atr_max * 2, 2)
+
+    order_line = (f"📦 `x{qty}` shares — {pos} | stop `${stop_price:.2f}` | tp `${take_price:.2f}`"
+                  if not is_watch_only else "👁 No order — momentum fading, watch only")
 
     return (
         f"*#{rank} {sym}* [{market}] — Score {score}/8{streak}\n"
         f"Price: `${close:.2f}` | RSI: `{rsi:.1f}` | ADX: `{adx:.1f}` | Vol: `{vol_ratio:.1f}x`\n"
         f"RS: `{rs_ret:+.1f}%` vs SPY `{spy_ret:+.1f}%`\n"
         f"{signal_line}\n"
-        f"📦 `x{qty}` shares — {pos} | stop `${stop_price:.2f}` | tp `${take_price:.2f}`\n"
+        f"{order_line}\n"
         f"Exit: {exit_label} (ATR `{atr_min:.2f}–{atr_max:.2f}`){warn_text}"
     )
 
@@ -74,8 +78,11 @@ def send_results(candidates: list[dict], market_label: str, stale_warning: str |
         _send(f"🔍 *Momentum Hunter — {market_label}*\n\nNo candidates met the minimum score threshold.")
         return
 
+    buys = sum(1 for c in candidates if c["exit"]["exit_mode"] == "trailing_stop")
+    watches = len(candidates) - buys
+    summary = f"{buys} buy" + (f", {watches} watch only" if watches else "")
     stale_line = f"\n⚠️ _{stale_warning}_\n" if stale_warning else ""
-    header = f"🚀 *Momentum Hunter — {market_label}*\n_{len(candidates)} candidate(s) found_{stale_line}\n\n"
+    header = f"🚀 *Momentum Hunter — {market_label}*\n_{len(candidates)} candidate(s) — {summary}_{stale_line}\n\n"
     blocks = [_format_candidate(i + 1, c) for i, c in enumerate(candidates)]
 
     # Build messages that stay under Telegram's 4096-char limit
