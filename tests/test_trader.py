@@ -283,13 +283,6 @@ class TestPlaceOrders:
         expected_tp = round(10.0 + 0.6 * 2, 2)
         assert placed[0]["take_price"] == expected_tp
 
-    def test_fixed_mode_uses_tight_take_profit(self, tmp_path):
-        # take_profit = price + atr_max × 1
-        c = _candidate(price=10.0, atr_min=0.3, atr_max=0.6, exit_mode="fixed_take_profit")
-        placed, _ = self._run([c], orders_file=tmp_path / "o.json")
-        expected_tp = round(10.0 + 0.6, 2)
-        assert placed[0]["take_price"] == expected_tp
-
     def test_skips_already_ordered_symbol(self, tmp_path):
         orders_file = tmp_path / "o.json"
         placed, client = self._run(
@@ -325,6 +318,12 @@ class TestPlaceOrders:
         placed, client = self._run(candidates, orders_file=tmp_path / "o.json")
         import config
         assert client.submit_order.call_count <= config.AUTO_ORDER_TOP_N
+
+    def test_skips_fixed_take_profit_mode(self, tmp_path):
+        c = _candidate(exit_mode="fixed_take_profit")
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
 
     def test_retries_with_adjusted_stop_on_42210000(self, tmp_path):
         error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'

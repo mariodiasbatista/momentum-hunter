@@ -243,9 +243,13 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             log.info("[orders] Skip %s — open position within %dd cooldown", symbol, config.ORDER_COOLDOWN_DAYS)
             continue
 
+        exit_mode = c["exit"]["exit_mode"]
+        if exit_mode == "fixed_take_profit":
+            log.info("[orders] Skip %s — fixed_take_profit mode (momentum already fading)", symbol)
+            continue
+
         last_close = c["trend"]["last_close"]
         market_price = current_asks.get(symbol, last_close)
-        exit_mode  = c["exit"]["exit_mode"]
         atr_min    = c["exit"]["trailing_stop_atr_range"][0]
         atr_max    = c["exit"]["trailing_stop_atr_range"][1]
         qty        = position_qty(market_price)
