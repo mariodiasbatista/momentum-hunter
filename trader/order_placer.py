@@ -248,6 +248,15 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             log.info("[orders] Skip %s — fixed_take_profit mode (momentum already fading)", symbol)
             continue
 
+        adx = c["momentum"]["adx"]
+        if adx < config.ADX_THRESHOLD:
+            log.info("[orders] Skip %s — ADX %.1f below %.0f (trend too weak)", symbol, adx, config.ADX_THRESHOLD)
+            continue
+
+        if c["volume"]["volume_drying_up"]:
+            log.info("[orders] Skip %s — volume drying up (buyers fading)", symbol)
+            continue
+
         last_close = c["trend"]["last_close"]
         market_price = current_asks.get(symbol, last_close)
         atr_min    = c["exit"]["trailing_stop_atr_range"][0]

@@ -74,6 +74,7 @@ def _candidate(
     atr_min=0.5,
     atr_max=1.0,
     rsi=60.0,
+    adx=32.0,
     warning_count=0,
 ):
     warnings = ["warning signal"] * warning_count
@@ -92,7 +93,7 @@ def _candidate(
             "rsi": rsi, "rsi_overbought": rsi > 70,
             "macd_above_signal": True, "macd_histogram_positive": True,
             "macd_histogram_shrinking": False,
-            "adx": 32.0, "adx_strong": True, "adx_falling": False, "atr": atr_min / 1.5,
+            "adx": adx, "adx_strong": adx >= 30, "adx_falling": False, "atr": atr_min / 1.5,
         },
         "volume": {
             "volume": 1_000_000, "avg_volume": 800_000,
@@ -324,6 +325,24 @@ class TestPlaceOrders:
         placed, client = self._run([c], orders_file=tmp_path / "o.json")
         assert len(placed) == 0
         client.submit_order.assert_not_called()
+
+    def test_skips_weak_adx(self, tmp_path):
+        c = _candidate(adx=24.0)
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_skips_volume_drying_up(self, tmp_path):
+        c = _candidate()
+        c["volume"]["volume_drying_up"] = True
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_places_order_when_adx_meets_threshold(self, tmp_path):
+        c = _candidate(adx=30.0)
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 1
 
     def test_retries_with_adjusted_stop_on_42210000(self, tmp_path):
         error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'

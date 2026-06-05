@@ -26,7 +26,7 @@ MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 ADX_PERIOD = 14
-ADX_THRESHOLD = 25
+ADX_THRESHOLD = 30
 VOLUME_PERIOD = 20
 VOLUME_MULTIPLIER = 1.2  # volume must be >= 20% above avg
 RS_LOOKBACK_DAYS = 63    # ~3 months relative strength vs SPY
