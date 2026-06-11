@@ -217,7 +217,8 @@ class TestCooldown:
         with patch("trader.order_placer._get_client", return_value=mock_client), \
              patch("trader.order_placer._ORDERS_FILE", orders_file), \
              patch("trader.order_placer._record_order"), \
-             patch("trader.premarket_validator.load_approved_today", return_value=None):
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders([_candidate(symbol="AAPL")])
         assert len(placed) == 0
@@ -237,7 +238,8 @@ class TestCooldown:
         with patch("trader.order_placer._get_client", return_value=mock_client), \
              patch("trader.order_placer._ORDERS_FILE", orders_file), \
              patch("trader.order_placer._record_order"), \
-             patch("trader.premarket_validator.load_approved_today", return_value=None):
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders([_candidate(symbol="AAPL")])
         assert len(placed) == 1
@@ -258,7 +260,8 @@ class TestPlaceOrders:
                    orders_file or Path("/tmp/orders_test_noop.json")), \
              patch("trader.order_placer._record_order"), \
              patch("trader.premarket_validator.load_approved_today", return_value=None), \
-             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders(candidates)
 
@@ -344,6 +347,51 @@ class TestPlaceOrders:
         placed, client = self._run([c], orders_file=tmp_path / "o.json")
         assert len(placed) == 1
 
+    def test_skips_macd_histogram_shrinking(self, tmp_path):
+        c = _candidate()
+        c["momentum"]["macd_histogram_shrinking"] = True
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_places_order_when_macd_building(self, tmp_path):
+        c = _candidate()
+        c["momentum"]["macd_histogram_shrinking"] = False
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_spy_bear_day_skips_all_orders(self, tmp_path):
+        from unittest.mock import patch
+        with patch("trader.order_placer._get_spy_open_return", return_value=-1.2), \
+             patch("trader.order_placer._get_client", return_value=MagicMock()), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("notifier.telegram._send"):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(), _candidate(symbol="NVDA")])
+        assert placed == []
+
+    def test_spy_flat_day_allows_orders(self, tmp_path):
+        c = _candidate()
+        c["momentum"]["macd_histogram_shrinking"] = False
+        # _run already mocks _get_spy_open_return to return None (no block)
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_spy_near_threshold_does_not_block(self, tmp_path):
+        with patch("trader.order_placer._get_spy_open_return", return_value=-0.4), \
+             patch("trader.order_placer._get_client", return_value=MagicMock(
+                 submit_order=MagicMock(return_value=_mock_order()),
+                 get_all_positions=MagicMock(return_value=[]))), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate()])
+        assert len(placed) == 1
+
     def test_retries_with_adjusted_stop_on_42210000(self, tmp_path):
         error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
         retry_order = _mock_order()
@@ -354,7 +402,8 @@ class TestPlaceOrders:
              patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
              patch("trader.order_placer._record_order"), \
              patch("trader.premarket_validator.load_approved_today", return_value=None), \
-             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders([_candidate(price=25.0, atr_min=0.5)])
         assert len(placed) == 1
@@ -370,7 +419,8 @@ class TestPlaceOrders:
              patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
              patch("trader.order_placer._record_order"), \
              patch("trader.premarket_validator.load_approved_today", return_value=None), \
-             patch("data.alpaca_client.fetch_latest_asks", return_value={}):
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
             with caplog.at_level(logging.ERROR, logger="trader.orders"):
                 from trader.order_placer import place_orders
                 placed = place_orders([_candidate(price=25.0)])

@@ -347,6 +347,15 @@ def load_signals(asset_class: str, min_score: int = 0) -> list[dict]:
     return results
 
 
+def get_spy_prior_close() -> float | None:
+    """Return the most recent SPY daily close from the bars table (used for regime check)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT close FROM bars WHERE symbol='SPY' ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    return float(row[0]) if row else None
+
+
 def signals_computed_today() -> bool:
     from datetime import date
     today = date.today().isoformat()

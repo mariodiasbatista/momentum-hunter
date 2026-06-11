@@ -26,6 +26,21 @@ log = logging.getLogger("trader.orders")
 _ORDERS_FILE = Path(__file__).parent.parent / "data" / "orders_placed.json"
 
 
+def _get_spy_open_return() -> float | None:
+    """Return SPY's current % return vs prior daily close, or None if data unavailable."""
+    from data.alpaca_client import fetch_latest_prices
+    from data.db import get_spy_prior_close
+    try:
+        prices = fetch_latest_prices(["SPY"])
+        spy_now = prices.get("SPY")
+        spy_prev = get_spy_prior_close()
+        if spy_now and spy_prev:
+            return (spy_now - spy_prev) / spy_prev * 100
+    except Exception as exc:
+        log.warning("[orders] SPY regime check failed: %s", exc)
+    return None
+
+
 # ── Position sizing ──────────────────────────────────────────────────────────
 
 def position_qty(price: float) -> int:
@@ -187,6 +202,20 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
     from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 
+    # Market regime guard: abort if SPY is already down at the open
+    spy_ret = _get_spy_open_return()
+    if spy_ret is not None and spy_ret <= -config.SPY_BEAR_THRESHOLD:
+        log.warning(
+            "[orders] 🚫 Market down — SPY %.2f%% vs prior close (threshold %.1f%%). Skipping all orders.",
+            spy_ret, config.SPY_BEAR_THRESHOLD,
+        )
+        from notifier.telegram import _send
+        _send(
+            f"⚠️ *Market Guard* — SPY down `{spy_ret:.2f}%` at open.\n"
+            f"All orders skipped. Existing positions remain open."
+        )
+        return []
+
     client = _get_client()
     already_ordered = _orders_today()
 
@@ -255,6 +284,10 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
         if c["volume"]["volume_drying_up"]:
             log.info("[orders] Skip %s — volume drying up (buyers fading)", symbol)
+            continue
+
+        if c["momentum"]["macd_histogram_shrinking"]:
+            log.info("[orders] Skip %s — MACD histogram shrinking (momentum fading)", symbol)
             continue
 
         last_close = c["trend"]["last_close"]

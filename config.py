@@ -72,6 +72,9 @@ MIN_GAIN_TAKE_PCT = 8.0   # Lock in profits when gain exceeds this % from entry
 # primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
 PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]
 
+# Market regime guard: skip all orders if SPY is down >= this % from prior close at 9:45 AM
+SPY_BEAR_THRESHOLD = 0.5   # percent (positive value — triggers when SPY return <= -0.5%)
+
 # Crypto pairs tracked via Alpaca
 CRYPTO_PAIRS = [
     "BTC/USD",
