@@ -5,7 +5,7 @@ Buy rules (Execution v1 — 2026-05-22):
   - price > $50  → 1 position ($250)
   - price < $50  → 3 positions ($750)
   - Entry: market order at 9:45 AM ET (after first 15-min candle confirms direction)
-  - Stop loss: tighter of (price − ATR×1.5) or (price × 0.97) — hard 3% cap
+  - Stop loss: price − ATR×1.5 (tight end), capped at 1% below entry
   - Take profit:
       trailing_stop mode  → price + ATR×6  (wide safety net — let the winner run)
       fixed_take_profit   → price + ATR×3  (defined target — take profit and exit)
@@ -296,13 +296,12 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         atr_max    = c["exit"]["trailing_stop_atr_range"][1]
         qty        = position_qty(market_price)
 
-        # Stop loss: tighter of ATR×1.5 or 3% below entry (hard cap).
-        # max() picks the higher price = tighter stop = smaller max loss.
+        # Stop loss: ATR×1.5 below entry, never more than 1% below.
         # Subtract an extra cent from the ATR leg — if the fill lands exactly at
         # ask - atr_min (a 1-ATR drop from quote to fill), the stop would equal
         # the fill price and be rejected by the broker (needs <= fill - 0.01).
         stop_cap = math.floor((market_price - 0.01) * 100) / 100
-        stop_price = round(max(market_price - atr_min - 0.01, market_price * 0.97), 2)
+        stop_price = round(min(market_price - atr_min - 0.01, market_price * 0.99), 2)
         stop_price = min(stop_price, stop_cap)
         stop_price = max(stop_price, 0.01)
 
