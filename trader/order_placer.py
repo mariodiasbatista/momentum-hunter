@@ -1,7 +1,7 @@
 """
 trader/order_placer.py — position sizing and Alpaca bracket order execution.
 
-Buy rules (Execution v2 — 2026-06-20):
+Buy rules (Execution v3 — 2026-06-20):
   - price > $50  → 1 position ($250)
   - price < $50  → 3 positions ($750)
   - Entry: market order at 9:45 AM ET (after first 15-min candle confirms direction)
@@ -109,6 +109,19 @@ def load_entry_for_symbol(symbol: str) -> dict | None:
             day = data[date_str]
             if isinstance(day, dict) and symbol in day:
                 return day[symbol]
+    except Exception:
+        pass
+    return None
+
+
+def load_entry_date_for_symbol(symbol: str) -> str | None:
+    """Return the order date (YYYY-MM-DD) of the most recent entry for symbol, or None."""
+    try:
+        data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
+        for date_str in sorted(data.keys(), reverse=True):
+            day = data[date_str]
+            if isinstance(day, dict) and symbol in day:
+                return date_str
     except Exception:
         pass
     return None

@@ -82,7 +82,7 @@ def _candidate(
         "symbol": symbol,
         "market": "stocks",
         "score": 8,
-        "days_in_scan": 1,
+        "days_in_scan": 2,
         "trend": {
             "last_close": price,
             "sma50": price * 0.9, "sma200": price * 0.8,
@@ -189,20 +189,21 @@ class TestCooldown:
             from trader.order_placer import _open_positions_in_cooldown
             assert "AAPL" not in _open_positions_in_cooldown(set())  # not open
 
-    def test_open_position_older_than_cooldown_not_blocked(self, tmp_path):
-        # AAPL bought 3 days ago, cooldown=1 — still open but outside window
+    def test_open_position_always_blocked_regardless_of_age(self, tmp_path):
+        # Any open position blocks re-entry regardless of how long it's been held
         self._write_orders(tmp_path, days_ago=3, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 1):
             from trader.order_placer import _open_positions_in_cooldown
-            assert "AAPL" not in _open_positions_in_cooldown({"AAPL"})
+            assert "AAPL" in _open_positions_in_cooldown({"AAPL"})
 
-    def test_zero_cooldown_never_blocks(self, tmp_path):
+    def test_open_position_blocked_regardless_of_cooldown_setting(self, tmp_path):
+        # cooldown=0 does not unblock currently-open positions
         self._write_orders(tmp_path, days_ago=1, symbols=["AAPL"])
         with patch("trader.order_placer._ORDERS_FILE", tmp_path / "orders.json"), \
              patch.object(__import__("config"), "ORDER_COOLDOWN_DAYS", 0):
             from trader.order_placer import _open_positions_in_cooldown
-            assert _open_positions_in_cooldown({"AAPL"}) == set()
+            assert "AAPL" in _open_positions_in_cooldown({"AAPL"})
 
     def test_place_orders_skips_open_position_in_cooldown(self, tmp_path):
         from datetime import date, timedelta
@@ -224,9 +225,9 @@ class TestCooldown:
         assert len(placed) == 0
         mock_client.submit_order.assert_not_called()
 
-    def test_place_orders_allows_old_open_position_outside_cooldown(self, tmp_path):
+    def test_place_orders_blocks_any_open_position_regardless_of_age(self, tmp_path):
         from datetime import date, timedelta
-        # Bought 5 days ago, cooldown=1 — outside window, should be allowed
+        # Bought 5 days ago but still open — re-entry is always blocked while position is open
         old_date = (date.today() - timedelta(days=5)).isoformat()
         orders_file = tmp_path / "orders.json"
         orders_file.write_text(json.dumps({old_date: {"AAPL": {"qty": 10, "entry_price": 100.0}}}))
@@ -242,7 +243,8 @@ class TestCooldown:
              patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders([_candidate(symbol="AAPL")])
-        assert len(placed) == 1
+        assert len(placed) == 0
+        mock_client.submit_order.assert_not_called()
 
 
 class TestPlaceOrders:
@@ -634,22 +636,31 @@ class TestIntradayMonitor:
             from trader.intraday_monitor import run_intraday_check
             assert run_intraday_check() == []
 
-    def test_closes_when_intraday_rsi_above_70(self):
+    def test_closes_when_intraday_rsi_above_threshold(self):
+        # RSI_OVERBOUGHT = 65; RSI=72 > 65 → close
         pos = _mock_position("AAPL")
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 72.0])
         assert len(closed) == 1
         assert closed[0]["symbol"] == "AAPL"
         client.close_position.assert_called_once_with("AAPL")
 
-    def test_holds_when_intraday_rsi_below_70(self):
+    def test_closes_when_intraday_rsi_between_65_and_70(self):
+        # RSI_OVERBOUGHT changed from 70 → 65; RSI=68 now triggers exit
         pos = _mock_position("AAPL")
-        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 65.0])
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[68.0])
+        assert len(closed) == 1
+
+    def test_holds_when_intraday_rsi_below_threshold(self):
+        # RSI=64 < 65 → hold
+        pos = _mock_position("AAPL")
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 64.0])
         assert len(closed) == 0
         client.close_position.assert_not_called()
 
-    def test_holds_exactly_at_rsi_70(self):
+    def test_holds_exactly_at_rsi_overbought_threshold(self):
+        # RSI=65 is NOT strictly > 65 → hold (threshold is exclusive)
         pos = _mock_position("AAPL")
-        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[70.0])
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[65.0])
         assert len(closed) == 0
 
     def test_skips_symbol_with_no_bar_data(self, caplog):
@@ -845,3 +856,161 @@ class TestClosePositionWithRetry:
         close_position_with_retry(mock_client, "AAPL")
         mock_client.cancel_order_by_id.assert_called_once_with("bracket-leg-1")
         mock_client.close_position.assert_called_once_with("AAPL")
+
+
+# ── load_entry_date_for_symbol ────────────────────────────────────────────────
+
+class TestLoadEntryDateForSymbol:
+    def _write_orders(self, tmp_path, data: dict):
+        f = tmp_path / "orders.json"
+        f.write_text(json.dumps(data))
+        return f
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        with patch("trader.order_placer._ORDERS_FILE", tmp_path / "missing.json"):
+            from trader.order_placer import load_entry_date_for_symbol
+            assert load_entry_date_for_symbol("AAPL") is None
+
+    def test_returns_none_when_symbol_not_found(self, tmp_path):
+        f = self._write_orders(tmp_path, {"2026-06-01": {"MSFT": {"qty": 1}}})
+        with patch("trader.order_placer._ORDERS_FILE", f):
+            from trader.order_placer import load_entry_date_for_symbol
+            assert load_entry_date_for_symbol("AAPL") is None
+
+    def test_returns_date_of_entry(self, tmp_path):
+        f = self._write_orders(tmp_path, {"2026-06-01": {"AAPL": {"qty": 5}}})
+        with patch("trader.order_placer._ORDERS_FILE", f):
+            from trader.order_placer import load_entry_date_for_symbol
+            assert load_entry_date_for_symbol("AAPL") == "2026-06-01"
+
+    def test_returns_most_recent_date_across_multiple_days(self, tmp_path):
+        f = self._write_orders(tmp_path, {
+            "2026-05-20": {"AAPL": {"qty": 5}},
+            "2026-06-01": {"AAPL": {"qty": 3}},
+        })
+        with patch("trader.order_placer._ORDERS_FILE", f):
+            from trader.order_placer import load_entry_date_for_symbol
+            assert load_entry_date_for_symbol("AAPL") == "2026-06-01"
+
+    def test_returns_correct_symbol_among_multiple(self, tmp_path):
+        f = self._write_orders(tmp_path, {
+            "2026-06-10": {"AAPL": {"qty": 1}, "NVDA": {"qty": 2}},
+        })
+        with patch("trader.order_placer._ORDERS_FILE", f):
+            from trader.order_placer import load_entry_date_for_symbol
+            assert load_entry_date_for_symbol("NVDA") == "2026-06-10"
+            assert load_entry_date_for_symbol("AAPL") == "2026-06-10"
+
+
+# ── days_in_scan filter in place_orders ───────────────────────────────────────
+
+class TestDaysInScanFilter:
+    def _run(self, candidate, orders_file):
+        mock_client = MagicMock()
+        mock_client.submit_order.return_value = _mock_order()
+        mock_client.get_all_positions.return_value = []
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", orders_file), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
+            from trader.order_placer import place_orders
+            placed = place_orders([candidate])
+        return placed, mock_client
+
+    def test_skips_candidate_with_one_day_in_scan(self, tmp_path):
+        c = _candidate()
+        c["days_in_scan"] = 1
+        placed, client = self._run(c, tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_places_order_for_candidate_with_two_days_in_scan(self, tmp_path):
+        c = _candidate()
+        c["days_in_scan"] = 2
+        placed, client = self._run(c, tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_places_order_for_candidate_with_many_days_in_scan(self, tmp_path):
+        c = _candidate()
+        c["days_in_scan"] = 5
+        placed, client = self._run(c, tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_missing_days_in_scan_defaults_to_one_and_skips(self, tmp_path):
+        c = _candidate()
+        del c["days_in_scan"]
+        placed, client = self._run(c, tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+
+# ── max-hold exit in intraday monitor ────────────────────────────────────────
+
+class TestIntradayMaxHold:
+    def _run_with_entry_date(self, entry_date_str, rsi_values=None):
+        pos = _mock_position("AAPL", unrealized_plpc="0.02")
+        mock_client = MagicMock()
+        mock_client.get_all_positions.return_value = [pos]
+        mock_client.get_orders.return_value = []
+
+        def fake_rsi(series, length):
+            return pd.Series(rsi_values or [55.0])
+
+        with patch("trader.intraday_monitor._get_trading_client", return_value=mock_client), \
+             patch("data.alpaca_client.fetch_intraday_bars",
+                   return_value={"AAPL": _make_bars()}), \
+             patch("trader.intraday_monitor.ta.rsi", side_effect=fake_rsi), \
+             patch("trader.trade_recorder.scan_for_fills", return_value=[]), \
+             patch("trader.trade_recorder.record_manual_close", return_value={}), \
+             patch("trader.order_placer.load_entry_date_for_symbol",
+                   return_value=entry_date_str):
+            from trader.intraday_monitor import run_intraday_check
+            closed = run_intraday_check()
+        return closed, mock_client
+
+    def test_closes_position_held_at_max_hold_days(self):
+        from datetime import date, timedelta
+        import config
+        entry = (date.today() - timedelta(days=config.MAX_HOLD_DAYS)).isoformat()
+        closed, client = self._run_with_entry_date(entry)
+        assert len(closed) == 1
+        assert "max hold" in closed[0]["reason"]
+        client.close_position.assert_called_once_with("AAPL")
+
+    def test_closes_position_held_beyond_max_hold_days(self):
+        from datetime import date, timedelta
+        import config
+        entry = (date.today() - timedelta(days=config.MAX_HOLD_DAYS + 3)).isoformat()
+        closed, client = self._run_with_entry_date(entry)
+        assert len(closed) == 1
+        assert "max hold" in closed[0]["reason"]
+
+    def test_holds_position_under_max_hold_days(self):
+        from datetime import date, timedelta
+        import config
+        entry = (date.today() - timedelta(days=config.MAX_HOLD_DAYS - 1)).isoformat()
+        closed, client = self._run_with_entry_date(entry)
+        assert len(closed) == 0
+        client.close_position.assert_not_called()
+
+    def test_holds_position_entered_today(self):
+        from datetime import date
+        entry = date.today().isoformat()
+        closed, client = self._run_with_entry_date(entry)
+        assert len(closed) == 0
+
+    def test_max_hold_takes_priority_over_rsi_exit(self):
+        # Position at max hold days AND RSI below threshold — max hold fires first
+        from datetime import date, timedelta
+        import config
+        entry = (date.today() - timedelta(days=config.MAX_HOLD_DAYS)).isoformat()
+        closed, client = self._run_with_entry_date(entry, rsi_values=[55.0])
+        assert len(closed) == 1
+        assert "max hold" in closed[0]["reason"]
+
+    def test_skips_max_hold_when_no_entry_date_recorded(self):
+        # No entry date in orders file → max-hold check skipped, RSI check proceeds
+        closed, client = self._run_with_entry_date(None, rsi_values=[55.0])
+        assert len(closed) == 0  # RSI=55 < 65, no other exit → holds

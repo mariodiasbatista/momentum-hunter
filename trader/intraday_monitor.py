@@ -3,7 +3,11 @@ trader/intraday_monitor.py — intraday RSI monitor on 15-minute bars.
 
 Runs every 30 minutes during market hours (10:15 AM – 3:00 PM ET).
 Fetches live 15-min bars for all open positions, recomputes RSI(14).
-Closes a position if intraday RSI > 70 (overbought on the 15-min chart).
+Closes a position when any exit condition is met:
+  - 15-min RSI > RSI_OVERBOUGHT (65) — overbought intraday
+  - Unrealized loss > MAX_LOSS_PCT (5%) — stop loss
+  - Gain >= MIN_GAIN_TAKE_PCT (8%) with RSI < 50 — momentum fading
+  - Position held >= MAX_HOLD_DAYS (7) calendar days — time stop
 
 Why 15-min bars:
   - Daily RSI is computed from yesterday's close — it's stale intraday.
@@ -11,6 +15,7 @@ Why 15-min bars:
     before the 3:30 PM end-of-day monitor would.
 """
 import logging
+from datetime import date
 
 import pandas_ta as ta
 
@@ -19,8 +24,9 @@ from trader._utils import close_position_with_retry, log_api_error
 
 log = logging.getLogger("trader.intraday")
 
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = config.RSI_OVERBOUGHT  # 70
+RSI_PERIOD     = 14
+RSI_OVERBOUGHT = config.RSI_OVERBOUGHT  # 65
+MAX_HOLD_DAYS  = config.MAX_HOLD_DAYS   # 7
 
 
 def _get_trading_client():
@@ -67,10 +73,34 @@ def run_intraday_check() -> list[dict]:
 
     log.debug("[intraday] Got 15-min bars for %d/%d symbols", len(bars_map), len(symbols))
 
+    from trader.order_placer import load_entry_date_for_symbol
+
     closed = []
     for pos in positions:
         symbol = pos.symbol
         plpc = float(pos.unrealized_plpc or 0) * 100  # positive = gain, negative = loss
+
+        # Max-hold exit — close positions held too long regardless of P&L
+        entry_date_str = load_entry_date_for_symbol(symbol)
+        if entry_date_str:
+            try:
+                days_held = (date.today() - date.fromisoformat(entry_date_str)).days
+                if days_held >= MAX_HOLD_DAYS:
+                    reason = f"max hold {days_held} days (limit {MAX_HOLD_DAYS})"
+                    log.info("[intraday] %s — %s, closing", symbol, reason)
+                    try:
+                        close_position_with_retry(client, symbol, log)
+                        pl = str(pos.unrealized_pl)
+                        log.info("[intraday] ✅ Closed %s | P&L=%s", symbol, pl)
+                        from trader.trade_recorder import record_manual_close
+                        record_manual_close(pos, reason)
+                        closed.append({"symbol": symbol, "intraday_rsi": None,
+                                        "unrealized_pl": pl, "reason": reason})
+                    except Exception as exc:
+                        log_api_error(log, f"[intraday] ❌ Failed to close {symbol}", exc)
+                    continue
+            except ValueError:
+                pass
 
         # Max-loss exit — no RSI data needed
         if plpc < -config.MAX_LOSS_PCT:

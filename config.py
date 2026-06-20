@@ -21,7 +21,7 @@ EMA_SLOW = 21
 RSI_PERIOD = 14
 RSI_MIN = 50
 RSI_MAX = 70
-RSI_OVERBOUGHT = 70
+RSI_OVERBOUGHT = 65
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
@@ -72,6 +72,7 @@ STOP_TRAIL_LOCK_RATIO   = 0.50
 # Exit thresholds
 MAX_LOSS_PCT      = 5.0   # Close if unrealized loss exceeds this % from entry
 MIN_GAIN_TAKE_PCT = 8.0   # Lock in profits when gain exceeds this % from entry
+MAX_HOLD_DAYS     = 7     # Force-close any position held longer than this many calendar days
 
 # Priority tiebreaker sort order for equal-score candidates:
 # primary = RS % vs SPY, secondary = ADX, tertiary = volume ratio
