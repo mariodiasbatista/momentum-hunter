@@ -18,6 +18,13 @@ def run_stock_scan(min_score: int = config.MIN_SCORE) -> list[dict]:
         log.info("[stocks] Scanned: %d | Approved: %d (score ≥ %d) | Blocked: %d",
                  len(all_signals), len(candidates), min_score, blocked)
         print(f"Loaded {len(candidates)} candidates from DB.")
+        candidates.sort(key=lambda x: (
+            -x["score"],
+            -x["days_in_scan"],
+            -x["relative_strength"]["rs_return"],
+            -x["momentum"]["adx"],
+            -x["volume"]["volume_ratio"],
+        ))
         return candidates
 
     # Fallback: compute on the fly if ingestion hasn't run yet today
