@@ -1,10 +1,11 @@
 """
 trader/order_placer.py — position sizing and Alpaca bracket order execution.
 
-Buy rules (Execution v1 — 2026-05-22):
+Buy rules (Execution v2 — 2026-06-20):
   - price > $50  → 1 position ($250)
   - price < $50  → 3 positions ($750)
   - Entry: market order at 9:45 AM ET (after first 15-min candle confirms direction)
+  - Requires stock to appear in scan ≥2 consecutive days (confirms sustained momentum)
   - Stop loss: price − ATR×1.5 (tight end), capped at 1% below entry
   - Take profit:
       trailing_stop mode  → price + ATR×6  (wide safety net — let the winner run)
@@ -266,6 +267,11 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
         if symbol in in_cooldown:
             log.info("[orders] Skip %s — already an open position", symbol)
+            continue
+
+        days_in_scan = c.get("days_in_scan", 1)
+        if days_in_scan < 2:
+            log.info("[orders] Skip %s — only 1 day in scan (momentum not yet confirmed)", symbol)
             continue
 
         exit_mode = c["exit"]["exit_mode"]
