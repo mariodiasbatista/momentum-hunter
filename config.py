@@ -52,6 +52,11 @@ POSITION_MULTIPLIER = 3
 # Auto-order: how many top candidates to place orders for each morning
 AUTO_ORDER_TOP_N = 10
 
+# Maximum number of concurrent open positions allowed.
+# No new orders are placed once this ceiling is reached.
+# Backtest showed 43-position pile-up degraded P&L; max 15 doubled it.
+MAX_CONCURRENT_POSITIONS = 15
+
 # Cooldown: a stock bought within this many calendar days cannot be re-bought
 # 0 = no cooldown (only today's dedup applies)
 # 1 = skip yesterday's buys (default — increases daily variety)

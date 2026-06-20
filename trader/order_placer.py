@@ -79,28 +79,12 @@ def _orders_today() -> set:
 
 def _open_positions_in_cooldown(open_symbols: set) -> set:
     """
-    Return symbols that are:
-      - currently held as an open position, AND
-      - were bought within ORDER_COOLDOWN_DAYS calendar days (including today)
-
-    Closed positions are never blocked — exited = free to re-enter.
-    Positions older than ORDER_COOLDOWN_DAYS are not blocked either.
-    Set ORDER_COOLDOWN_DAYS = 0 to disable.
+    Return all currently-open symbols — any open position blocks re-entry
+    regardless of how long it has been held.  The old time-window logic
+    allowed the same stock to be accumulated across multiple days; returning
+    the full open set prevents that.
     """
-    if config.ORDER_COOLDOWN_DAYS <= 0 or not open_symbols:
-        return set()
-    today = date.today()
-    blocked = set()
-    try:
-        data = json.loads(_ORDERS_FILE.read_text()) if _ORDERS_FILE.exists() else {}
-        for date_str, day_data in data.items():
-            days_ago = (today - date.fromisoformat(date_str)).days
-            if 0 <= days_ago <= config.ORDER_COOLDOWN_DAYS:
-                symbols = day_data.keys() if isinstance(day_data, dict) else day_data
-                blocked.update(sym for sym in symbols if sym in open_symbols)
-    except Exception:
-        pass
-    return blocked
+    return set(open_symbols)
 
 
 def load_orders_today() -> dict:
@@ -229,6 +213,15 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     in_cooldown = _open_positions_in_cooldown(open_symbols)
     placed = []
 
+    # Concurrent position cap: abort entirely if already at ceiling
+    n_open = len(open_symbols)
+    if n_open >= config.MAX_CONCURRENT_POSITIONS:
+        log.info(
+            "[orders] 🚫 Position cap reached — %d/%d open. No new orders.",
+            n_open, config.MAX_CONCURRENT_POSITIONS,
+        )
+        return []
+
     # Respect pre-market filter if validator ran this morning
     from trader.premarket_validator import load_approved_today
     approved = load_approved_today()
@@ -238,14 +231,11 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         log.info("[orders] No pre-market filter — using full candidate list")
 
     if in_cooldown:
-        symbols_str = ", ".join(sorted(in_cooldown))
-        log.info(
-            "⏳ Cooldown (%dd) — skipping open position(s): %s",
-            config.ORDER_COOLDOWN_DAYS, symbols_str
-        )
+        log.info("⏳ Skipping %d already-open position(s)", len(in_cooldown))
 
-    log.info("[orders] Starting — %d candidates, %d already ordered today",
-             len(candidates[:config.AUTO_ORDER_TOP_N]), len(already_ordered))
+    log.info("[orders] Starting — %d candidates, %d open, cap=%d",
+             len(candidates[:config.AUTO_ORDER_TOP_N]), n_open,
+             config.MAX_CONCURRENT_POSITIONS)
 
     # Fetch current ask prices in one batch to anchor stop calculations to actual market price.
     # Falls back to last_close per symbol if the quote fetch fails.
@@ -260,6 +250,12 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     for c in candidates[:config.AUTO_ORDER_TOP_N]:
         symbol = c["symbol"]
 
+        # Stop if placing the last order filled the cap
+        if n_open + len(placed) >= config.MAX_CONCURRENT_POSITIONS:
+            log.info("[orders] Position cap reached mid-loop (%d/%d). Stopping.",
+                     n_open + len(placed), config.MAX_CONCURRENT_POSITIONS)
+            break
+
         if symbol in already_ordered:
             log.debug("[orders] Skip %s — already ordered today", symbol)
             continue
@@ -269,7 +265,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             continue
 
         if symbol in in_cooldown:
-            log.info("[orders] Skip %s — open position within %dd cooldown", symbol, config.ORDER_COOLDOWN_DAYS)
+            log.info("[orders] Skip %s — already an open position", symbol)
             continue
 
         exit_mode = c["exit"]["exit_mode"]
