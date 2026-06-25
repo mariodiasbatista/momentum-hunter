@@ -245,22 +245,27 @@ def place_orders(candidates: list[dict]) -> list[dict]:
     if in_cooldown:
         log.info("⏳ Skipping %d already-open position(s)", len(in_cooldown))
 
-    log.info("[orders] Starting — %d candidates, %d open, cap=%d",
-             len(candidates[:config.AUTO_ORDER_TOP_N]), n_open,
-             config.MAX_CONCURRENT_POSITIONS)
+    log.info("[orders] Starting — %d candidates, %d open, cap=%d, order_limit=%d",
+             len(candidates), n_open,
+             config.MAX_CONCURRENT_POSITIONS, config.AUTO_ORDER_TOP_N)
 
     # Fetch current ask prices in one batch to anchor stop calculations to actual market price.
     # Falls back to last_close per symbol if the quote fetch fails.
-    top_symbols = [c["symbol"] for c in candidates[:config.AUTO_ORDER_TOP_N]]
+    all_symbols = [c["symbol"] for c in candidates]
     from data.alpaca_client import fetch_latest_asks
-    current_asks = fetch_latest_asks(top_symbols)
+    current_asks = fetch_latest_asks(all_symbols)
     if current_asks:
         log.debug("[orders] Fetched current asks for %d symbol(s)", len(current_asks))
     else:
         log.warning("[orders] Could not fetch current asks — using last_close for stop calculation")
 
-    for c in candidates[:config.AUTO_ORDER_TOP_N]:
+    for c in candidates:
         symbol = c["symbol"]
+
+        # Stop once we've placed the daily order limit
+        if len(placed) >= config.AUTO_ORDER_TOP_N:
+            log.info("[orders] Order limit reached (%d). Stopping.", config.AUTO_ORDER_TOP_N)
+            break
 
         # Stop if placing the last order filled the cap
         if n_open + len(placed) >= config.MAX_CONCURRENT_POSITIONS:
@@ -385,8 +390,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             "order_id":   str(order.id),
         })
 
-    log.info("[orders] Done — %d placed, %d skipped", len(placed),
-             len(candidates[:config.AUTO_ORDER_TOP_N]) - len(placed))
+    log.info("[orders] Done — %d placed, %d considered", len(placed), len(candidates))
     return placed
 
 

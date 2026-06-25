@@ -325,6 +325,23 @@ class TestPlaceOrders:
         import config
         assert client.submit_order.call_count <= config.AUTO_ORDER_TOP_N
 
+    def test_continues_past_filtered_candidates_to_fill_order_limit(self, tmp_path):
+        # First 8 candidates are fading (fixed_take_profit) — old code would stop at 10
+        # and only place 2. New code should walk past them and place up to AUTO_ORDER_TOP_N.
+        fading   = [_candidate(symbol=f"F{i}", exit_mode="fixed_take_profit") for i in range(8)]
+        good     = [_candidate(symbol=f"G{i}") for i in range(6)]
+        placed, client = self._run(fading + good, orders_file=tmp_path / "o.json")
+        assert len(placed) == 6  # all 6 good ones placed (below AUTO_ORDER_TOP_N cap)
+        assert client.submit_order.call_count == 6
+
+    def test_stops_at_order_limit_even_with_more_valid_candidates(self, tmp_path):
+        # 20 valid candidates — must stop at AUTO_ORDER_TOP_N regardless
+        import config
+        candidates = [_candidate(symbol=f"S{i}") for i in range(20)]
+        placed, client = self._run(candidates, orders_file=tmp_path / "o.json")
+        assert len(placed) == config.AUTO_ORDER_TOP_N
+        assert client.submit_order.call_count == config.AUTO_ORDER_TOP_N
+
     def test_skips_fixed_take_profit_mode(self, tmp_path):
         c = _candidate(exit_mode="fixed_take_profit")
         placed, client = self._run([c], orders_file=tmp_path / "o.json")
