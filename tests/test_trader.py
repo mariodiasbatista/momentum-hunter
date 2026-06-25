@@ -395,6 +395,8 @@ class TestPlaceOrders:
         assert len(placed) == 1
 
     def test_retries_with_adjusted_stop_on_42210000(self, tmp_path):
+        # fill=25.00, atr_min=0.5 → raw_atr=0.333, 2% of fill=0.50
+        # buffer = max(0.333, 0.50) = 0.50 → stop = 25.00 - 0.50 = 24.50
         error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
         retry_order = _mock_order()
         mock_client = MagicMock()
@@ -410,7 +412,26 @@ class TestPlaceOrders:
             placed = place_orders([_candidate(price=25.0, atr_min=0.5)])
         assert len(placed) == 1
         assert mock_client.submit_order.call_count == 2
-        assert placed[0]["stop_price"] == pytest.approx(24.98)  # floor(25.00 - 0.02)
+        assert placed[0]["stop_price"] == pytest.approx(24.50)  # fill(25.00) - max(ATR×1.0=0.33, 2%=0.50)
+
+    def test_retries_with_atr_buffer_when_atr_exceeds_two_pct(self, tmp_path):
+        # fill=25.00, atr_min=1.5 → raw_atr=1.0, 2% of fill=0.50
+        # buffer = max(1.0, 0.50) = 1.0 → stop = 25.00 - 1.0 = 24.00
+        error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
+        retry_order = _mock_order()
+        mock_client = MagicMock()
+        mock_client.get_all_positions.return_value = []
+        mock_client.submit_order.side_effect = [Exception(error_msg), retry_order]
+        with patch("trader.order_placer._get_client", return_value=mock_client), \
+             patch("trader.order_placer._ORDERS_FILE", tmp_path / "o.json"), \
+             patch("trader.order_placer._record_order"), \
+             patch("trader.premarket_validator.load_approved_today", return_value=None), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("trader.order_placer._get_spy_open_return", return_value=None):
+            from trader.order_placer import place_orders
+            placed = place_orders([_candidate(price=25.0, atr_min=1.5)])
+        assert len(placed) == 1
+        assert placed[0]["stop_price"] == pytest.approx(24.00)  # fill(25.00) - max(ATR×1.0=1.0, 2%=0.50)
 
     def test_retry_failure_skips_symbol(self, tmp_path, caplog):
         error_msg = '{"base_price":"25.00","code":42210000,"message":"stop too high"}'
@@ -429,12 +450,12 @@ class TestPlaceOrders:
         assert len(placed) == 0
 
 
-# ── _stop_from_fill_error ─────────────────────────────────────────────────────
+# ── _parse_fill_from_stop_error ───────────────────────────────────────────────
 
-class TestStopFromFillError:
+class TestParseFilFromStopError:
     def _call(self, msg):
-        from trader.order_placer import _stop_from_fill_error
-        return _stop_from_fill_error(Exception(msg))
+        from trader.order_placer import _parse_fill_from_stop_error
+        return _parse_fill_from_stop_error(Exception(msg))
 
     def test_returns_none_for_non_42210000_error(self):
         assert self._call("some other error 500") is None
@@ -442,24 +463,21 @@ class TestStopFromFillError:
     def test_returns_none_when_no_base_price_in_body(self):
         assert self._call("{code:42210000,message:stop too high}") is None
 
-    def test_parses_base_price_with_double_quotes(self):
+    def test_returns_fill_price_with_double_quotes(self):
         result = self._call('{"base_price":"108.64","code":42210000}')
-        expected = math.floor((108.64 - 0.02) * 100) / 100
-        assert result == pytest.approx(expected)
+        assert result == pytest.approx(108.64)
 
-    def test_parses_base_price_without_quotes(self):
+    def test_returns_fill_price_without_quotes(self):
         result = self._call('{"base_price":108.64,"code":42210000}')
-        assert result is not None
-        assert result < 108.64
+        assert result == pytest.approx(108.64)
 
     def test_parses_baseprice_key_variant(self):
         result = self._call('{"baseprice":"18.5424","code":42210000}')
-        assert result is not None
-        assert result < 18.5424
+        assert result == pytest.approx(18.5424)
 
-    def test_result_is_at_least_two_cents_below_fill(self):
+    def test_returns_raw_fill_not_adjusted(self):
         result = self._call('{"base_price":"50.00","code":42210000}')
-        assert result <= 50.00 - 0.02
+        assert result == pytest.approx(50.00)  # caller applies ATR/pct buffer
 
 
 # ── send_order_summary ───────────────────────────────────────────────────────

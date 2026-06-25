@@ -163,13 +163,13 @@ def _record_order(symbol: str, qty: int, entry_price: float,
 
 # ── Order placement helpers ──────────────────────────────────────────────────
 
-def _stop_from_fill_error(exc: Exception) -> float | None:
-    """Parse a 42210000 stop-rejection error and return a safe stop below the fill.
+def _parse_fill_from_stop_error(exc: Exception) -> float | None:
+    """Parse a 42210000 stop-rejection error and return the actual fill price (base_price).
 
-    Alpaca bracket orders are validated against the actual fill price (base_price),
-    which can differ from the ask we computed the stop from. When rejected, the
-    broker returns the fill price so we can anchor a corrected stop to it.
-    Returns floor(base_price - 0.02, 2 decimals) or None if not a stop error.
+    Alpaca bracket orders are validated against the actual fill price, which can
+    differ from the ask we computed the stop from. When rejected, the broker
+    returns the fill price so we can anchor a corrected stop to it.
+    Returns the fill price as a float, or None if not a stop-price error.
     """
     s = str(exc)
     if "42210000" not in s:
@@ -178,9 +178,7 @@ def _stop_from_fill_error(exc: Exception) -> float | None:
         m = re.search(rf'"{key}"\s*:\s*"?([0-9.]+)"?', s)
         if m:
             try:
-                base = float(m.group(1))
-                # 2 cents below fill guarantees stop <= fill - 0.01
-                return max(math.floor((base - 0.02) * 100) / 100, 0.01)
+                return float(m.group(1))
             except Exception:
                 pass
     return None
@@ -341,11 +339,17 @@ def place_orders(candidates: list[dict]) -> list[dict]:
                 take_profit=TakeProfitRequest(limit_price=take_price),
             ))
         except Exception as exc:
-            # Ask price can be inflated vs actual fill — retry once anchored to fill
-            adj_stop = _stop_from_fill_error(exc)
-            if adj_stop is not None:
-                log.info("[orders] %s — stop $%.2f rejected (ask/fill gap), retrying at $%.2f",
-                         symbol, stop_price, adj_stop)
+            # Ask price can be inflated vs actual fill — retry once anchored to fill.
+            # Use max(1×ATR, 2% of fill) as buffer so the stop survives minor intraday
+            # dips instead of triggering immediately after entry.
+            fill_price = _parse_fill_from_stop_error(exc)
+            if fill_price is not None:
+                raw_atr  = atr_min / 1.5          # atr_min = ATR×1.5 → divide to get 1×ATR
+                buffer   = max(raw_atr, fill_price * 0.02)
+                adj_stop = max(round(fill_price - buffer, 2), 0.01)
+                log.info("[orders] %s — stop $%.2f rejected (ask/fill gap), "
+                         "retrying with %.1f%% buffer at $%.2f",
+                         symbol, stop_price, buffer / fill_price * 100, adj_stop)
                 try:
                     order = client.submit_order(MarketOrderRequest(
                         symbol=symbol,
