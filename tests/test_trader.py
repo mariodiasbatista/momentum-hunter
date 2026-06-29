@@ -314,10 +314,12 @@ class TestPlaceOrders:
         assert any("Failed" in r.message for r in caplog.records)
 
     def test_stop_price_capped_at_one_percent_below(self, tmp_path):
-        # atr_min larger than 1% of price → stop capped at price × 0.99
-        c = _candidate(price=10.0, atr_min=5.0, atr_max=10.0)
+        # ATR too small to provide 1% cushion → stop floors at price × 0.99
+        # price=100, atr_min=0.05 → raw stop 99.94 > 99.00 → capped at 99.00
+        # stop_distance_pct = 0.05% well within volatility filter
+        c = _candidate(price=100.0, atr_min=0.05, atr_max=0.10)
         placed, _ = self._run([c], orders_file=tmp_path / "o.json")
-        assert placed[0]["stop_price"] <= round(10.0 * 0.99, 2)
+        assert placed[0]["stop_price"] == pytest.approx(99.00)
 
     def test_respects_auto_order_top_n(self, tmp_path):
         candidates = [_candidate(symbol=f"S{i}") for i in range(20)]
@@ -376,6 +378,19 @@ class TestPlaceOrders:
     def test_places_order_when_macd_building(self, tmp_path):
         c = _candidate()
         c["momentum"]["macd_histogram_shrinking"] = False
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_skips_when_stop_distance_too_volatile(self, tmp_path):
+        # price=5.36, atr_min=1.71 → stop distance 31.9% > 15% cap (CUPR-like micro-cap)
+        c = _candidate(price=5.36, atr_min=1.71)
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_places_order_when_stop_distance_within_limit(self, tmp_path):
+        # price=25.0, atr_min=3.0 → stop distance 12% < 15% cap
+        c = _candidate(price=25.0, atr_min=3.0)
         placed, client = self._run([c], orders_file=tmp_path / "o.json")
         assert len(placed) == 1
 

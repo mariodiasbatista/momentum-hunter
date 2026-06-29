@@ -311,6 +311,12 @@ def place_orders(candidates: list[dict]) -> list[dict]:
         last_close = c["trend"]["last_close"]
         market_price = current_asks.get(symbol, last_close)
         atr_min    = c["exit"]["trailing_stop_atr_range"][0]
+
+        stop_distance_pct = atr_min / market_price
+        if stop_distance_pct > config.MAX_STOP_DISTANCE_PCT:
+            log.info("[orders] Skip %s — stop distance %.1f%% exceeds max %.0f%% (too volatile)",
+                     symbol, stop_distance_pct * 100, config.MAX_STOP_DISTANCE_PCT * 100)
+            continue
         atr_max    = c["exit"]["trailing_stop_atr_range"][1]
         qty        = position_qty(market_price)
 

@@ -81,6 +81,11 @@ PRIORITY_SORT = ["rs_return", "adx", "volume_ratio"]
 # Market regime guard: skip all orders if SPY is down >= this % from prior close at 9:45 AM
 SPY_BEAR_THRESHOLD = 0.5   # percent (positive value — triggers when SPY return <= -0.5%)
 
+# Volatility filter: skip any stock whose ATR-derived stop distance exceeds this fraction
+# of the market price.  Stocks like CUPR (ATR = 32% of price) carry excessive weekend-gap
+# and intraday whipsaw risk relative to the fixed dollar position size.
+MAX_STOP_DISTANCE_PCT = 0.15   # 15% max stop distance (atr_min / market_price)
+
 # Crypto pairs tracked via Alpaca
 CRYPTO_PAIRS = [
     "BTC/USD",
