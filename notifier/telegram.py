@@ -1,3 +1,4 @@
+import logging
 import time
 
 import requests
@@ -6,16 +7,27 @@ import config
 
 _API_URL = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
 _MAX_MSG_LEN = 4096
+_MAX_RETRIES = 3
+
+log = logging.getLogger(__name__)
 
 
 def _send(text: str) -> None:
     payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    resp = requests.post(_API_URL, json=payload)
-    if resp.status_code == 429:
-        wait = resp.json().get("parameters", {}).get("retry_after", 5)
-        time.sleep(wait)
+    for attempt in range(_MAX_RETRIES):
         resp = requests.post(_API_URL, json=payload)
-    resp.raise_for_status()
+        if resp.status_code == 429:
+            wait = resp.json().get("parameters", {}).get("retry_after", 5)
+            log.warning("[telegram] 429 rate-limit — sleeping %ds (attempt %d/%d)",
+                        wait, attempt + 1, _MAX_RETRIES)
+            time.sleep(wait)
+            continue
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            log.error("[telegram] Failed to send message: %s", exc)
+        return
+    log.error("[telegram] Gave up after %d attempts — message not delivered", _MAX_RETRIES)
 
 
 def send_alert(message: str) -> None:

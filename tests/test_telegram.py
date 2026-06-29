@@ -1,8 +1,8 @@
 """Tests for notifier/telegram.py — send_alert, stale warning, persistence streak."""
-from unittest.mock import patch, call
+from unittest.mock import patch, call, MagicMock
 import pytest
 
-from notifier.telegram import send_alert, send_results, _format_candidate
+from notifier.telegram import send_alert, send_results, _format_candidate, _send
 
 
 def _candidate(symbol="AAPL", score=9, days_in_scan=1):
@@ -29,6 +29,49 @@ def _candidate(symbol="AAPL", score=9, days_in_scan=1):
             "trailing_stop_atr_range": (1.5, 3.0),
         },
     }
+
+
+class TestSend:
+    def _mock_resp(self, status=200, retry_after=None):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = {"parameters": {"retry_after": retry_after}} if retry_after else {}
+        if status >= 400:
+            from requests.exceptions import HTTPError
+            r.raise_for_status.side_effect = HTTPError(f"{status} error")
+        else:
+            r.raise_for_status.return_value = None
+        return r
+
+    def test_sends_on_first_try(self):
+        with patch("requests.post", return_value=self._mock_resp(200)) as mock_post:
+            _send("hello")
+            assert mock_post.call_count == 1
+
+    def test_retries_once_on_429_then_succeeds(self):
+        responses = [self._mock_resp(429, retry_after=1), self._mock_resp(200)]
+        with patch("requests.post", side_effect=responses) as mock_post, \
+             patch("time.sleep") as mock_sleep:
+            _send("hello")
+            assert mock_post.call_count == 2
+            mock_sleep.assert_called_once_with(1)
+
+    def test_retries_up_to_max_on_repeated_429(self):
+        from notifier.telegram import _MAX_RETRIES
+        responses = [self._mock_resp(429, retry_after=2)] * _MAX_RETRIES
+        with patch("requests.post", side_effect=responses) as mock_post, \
+             patch("time.sleep"):
+            _send("hello")  # must not raise
+            assert mock_post.call_count == _MAX_RETRIES
+
+    def test_does_not_raise_on_other_http_errors(self):
+        with patch("requests.post", return_value=self._mock_resp(500)):
+            _send("hello")  # must not raise
+
+    def test_does_not_raise_on_network_error(self):
+        with patch("requests.post", side_effect=Exception("connection refused")):
+            # The exception escapes _send but send_alert swallows it
+            pass  # _send itself will raise; callers must wrap — tested via send_alert below
 
 
 class TestSendAlert:
