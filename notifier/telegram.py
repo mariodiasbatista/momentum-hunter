@@ -1,3 +1,5 @@
+import time
+
 import requests
 
 import config
@@ -7,7 +9,12 @@ _MAX_MSG_LEN = 4096
 
 
 def _send(text: str) -> None:
-    resp = requests.post(_API_URL, json={"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
+    payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    resp = requests.post(_API_URL, json=payload)
+    if resp.status_code == 429:
+        wait = resp.json().get("parameters", {}).get("retry_after", 5)
+        time.sleep(wait)
+        resp = requests.post(_API_URL, json=payload)
     resp.raise_for_status()
 
 
@@ -91,6 +98,7 @@ def send_results(candidates: list[dict], market_label: str, stale_warning: str |
         chunk = block + "\n\n"
         if len(current) + len(chunk) > _MAX_MSG_LEN:
             _send(current.rstrip())
+            time.sleep(1)
             current = chunk
         else:
             current += chunk
