@@ -64,6 +64,15 @@ class TestSend:
             _send("hello")  # must not raise
             assert mock_post.call_count == _MAX_RETRIES
 
+    def test_retries_as_plain_text_on_400(self):
+        responses = [self._mock_resp(400), self._mock_resp(200)]
+        with patch("requests.post", side_effect=responses) as mock_post:
+            _send("hello *broken_ markdown")
+            assert mock_post.call_count == 2
+            # Second call must omit parse_mode
+            second_payload = mock_post.call_args_list[1][1]["json"]
+            assert "parse_mode" not in second_payload
+
     def test_does_not_raise_on_other_http_errors(self):
         with patch("requests.post", return_value=self._mock_resp(500)):
             _send("hello")  # must not raise

@@ -22,6 +22,11 @@ def _send(text: str) -> None:
                         wait, attempt + 1, _MAX_RETRIES)
             time.sleep(wait)
             continue
+        if resp.status_code == 400 and payload.get("parse_mode"):
+            # Markdown parse error — special chars in dynamic content. Retry as plain text.
+            log.warning("[telegram] 400 Markdown error — retrying as plain text: %.120s", text)
+            payload = {k: v for k, v in payload.items() if k != "parse_mode"}
+            continue
         try:
             resp.raise_for_status()
         except Exception as exc:
