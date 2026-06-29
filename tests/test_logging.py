@@ -104,6 +104,18 @@ class TestTelegramHandler:
             h.emit(self._make_record(logging.ERROR, "something broke"))
             mock_threading.Thread.assert_called_once()
 
+    def test_notifier_telegram_logs_are_not_forwarded(self):
+        with patch("notifier.log_config.get_telegram_level", return_value=2), \
+             patch("notifier.telegram_handler.threading") as mock_threading:
+            from notifier.telegram_handler import TelegramHandler
+            h = TelegramHandler()
+            record = logging.LogRecord(
+                name="notifier.telegram", level=logging.WARNING,
+                pathname="", lineno=0, msg="400 error loop", args=(), exc_info=None,
+            )
+            h.emit(record)
+            mock_threading.Thread.assert_not_called()
+
     def test_setup_does_not_add_duplicate_handlers(self):
         from notifier.telegram_handler import TelegramHandler, setup_telegram_logging
         root = logging.getLogger()

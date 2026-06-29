@@ -13,14 +13,21 @@ _ICONS = {
 
 def _send_safe(text: str) -> None:
     try:
-        from notifier.telegram import _send
-        _send(text)
+        import requests
+        import config
+        _API_URL = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(_API_URL, json={"chat_id": config.TELEGRAM_CHAT_ID, "text": text},
+                      timeout=10)
     except Exception:
         pass
 
 
 class TelegramHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        # Never forward logs that originate from the telegram notifier itself —
+        # doing so creates a recursive loop where delivery errors log more errors.
+        if record.name.startswith("notifier.telegram"):
+            return
         from notifier.log_config import get_telegram_level
         tg_level = get_telegram_level()
         if tg_level == 0:
@@ -30,7 +37,7 @@ class TelegramHandler(logging.Handler):
             return
         try:
             icon = _ICONS.get(record.levelno, "📋")
-            text = f"{icon} `[{record.levelname}]` {self.format(record)}"
+            text = f"{icon} [{record.levelname}] {self.format(record)}"
             threading.Thread(target=_send_safe, args=(text,), daemon=True).start()
         except Exception:
             pass
