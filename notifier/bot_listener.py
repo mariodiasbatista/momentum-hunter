@@ -120,6 +120,9 @@ def run_forever() -> None:
 
         except requests.exceptions.Timeout:
             pass  # normal long-poll timeout, loop again
+        except (requests.exceptions.ConnectionError, ConnectionResetError, OSError) as exc:
+            log.debug("Poll connection drop (transient): %s — retrying in 5s", exc)
+            time.sleep(5)
         except Exception as exc:
             log.warning("Poll error: %s — retrying in 5s", exc)
             time.sleep(5)
