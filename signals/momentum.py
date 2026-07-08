@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import pandas_ta as ta
 
@@ -13,6 +15,8 @@ def compute_momentum(df: pd.DataFrame) -> dict:
     macd_result = ta.macd(close, fast=config.MACD_FAST, slow=config.MACD_SLOW, signal=config.MACD_SIGNAL)
     adx_result = ta.adx(high, low, close, length=config.ADX_PERIOD)
     atr_result = ta.atr(high, low, close, length=14)
+
+    roc20 = close / close.shift(config.ROC_PERIOD) - 1
 
     last_rsi = float(rsi.iloc[-1])
 
@@ -30,6 +34,9 @@ def compute_momentum(df: pd.DataFrame) -> dict:
 
     last_atr = float(atr_result.iloc[-1])
 
+    roc_val = roc20.iloc[-1] if len(roc20) >= config.ROC_PERIOD + 1 else float("nan")
+    roc_pass = bool(not math.isnan(roc_val) and roc_val * 100 >= config.ROC_MIN_PCT)
+
     return {
         "rsi": last_rsi,
         "rsi_in_range": bool(config.RSI_MIN <= last_rsi <= config.RSI_MAX),
@@ -41,4 +48,5 @@ def compute_momentum(df: pd.DataFrame) -> dict:
         "adx_strong": bool(last_adx > config.ADX_THRESHOLD),
         "adx_falling": bool(last_adx < prev_adx and last_adx < config.ADX_THRESHOLD),
         "atr": last_atr,
+        "roc_pass": roc_pass,
     }

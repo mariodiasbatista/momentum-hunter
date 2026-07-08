@@ -94,12 +94,13 @@ def _candidate(
             "macd_above_signal": True, "macd_histogram_positive": True,
             "macd_histogram_shrinking": False,
             "adx": adx, "adx_strong": adx >= 30, "adx_falling": False, "atr": atr_min / 1.5,
+            "roc_pass": True,
         },
         "volume": {
             "volume": 1_000_000, "avg_volume": 800_000,
             "volume_ratio": 1.25, "volume_drying_up": False, "volume_above_avg": True,
         },
-        "relative_strength": {"rs_return": 20.0, "spy_return": 5.0, "outperforming_spy": True},
+        "relative_strength": {"rs_return": 20.0, "spy_return": 5.0, "outperforming_spy": True, "dual_rs": True},
         "criteria": {k: True for k in [
             "above_sma50", "above_sma200", "ema9_above_ema21",
             "rsi_in_range", "macd_bullish", "adx_strong", "volume_above_avg", "outperforming_spy",
@@ -248,7 +249,7 @@ class TestCooldown:
 
 
 class TestPlaceOrders:
-    def _run(self, candidates, already_ordered=None, orders_file=None):
+    def _run(self, candidates, already_ordered=None, orders_file=None, asks=None):
         mock_client = MagicMock()
         mock_client.submit_order.return_value = _mock_order()
 
@@ -262,7 +263,7 @@ class TestPlaceOrders:
                    orders_file or Path("/tmp/orders_test_noop.json")), \
              patch("trader.order_placer._record_order"), \
              patch("trader.premarket_validator.load_approved_today", return_value=None), \
-             patch("data.alpaca_client.fetch_latest_asks", return_value={}), \
+             patch("data.alpaca_client.fetch_latest_asks", return_value=asks or {}), \
              patch("trader.order_placer._get_spy_open_return", return_value=None):
             from trader.order_placer import place_orders
             placed = place_orders(candidates)
@@ -379,6 +380,39 @@ class TestPlaceOrders:
         c = _candidate()
         c["momentum"]["macd_histogram_shrinking"] = False
         placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 1
+
+    def test_skips_when_dual_rs_fails(self, tmp_path):
+        c = _candidate()
+        c["relative_strength"]["dual_rs"] = False
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_skips_when_roc_pass_fails(self, tmp_path):
+        c = _candidate()
+        c["momentum"]["roc_pass"] = False
+        placed, client = self._run([c], orders_file=tmp_path / "o.json")
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_skips_when_gapped_up_above_threshold(self, tmp_path):
+        # price=25.0, last_close=25.0 → fetch returns ask 26.1 → gap 4.4% > 4%
+        c = _candidate(price=25.0)
+        placed, client = self._run(
+            [c], orders_file=tmp_path / "o.json",
+            asks={"AAPL": 26.1},
+        )
+        assert len(placed) == 0
+        client.submit_order.assert_not_called()
+
+    def test_places_order_when_gap_within_threshold(self, tmp_path):
+        # price=25.0, ask=25.9 → gap 3.6% < 4%
+        c = _candidate(price=25.0)
+        placed, client = self._run(
+            [c], orders_file=tmp_path / "o.json",
+            asks={"AAPL": 25.9},
+        )
         assert len(placed) == 1
 
     def test_skips_when_stop_distance_too_volatile(self, tmp_path):

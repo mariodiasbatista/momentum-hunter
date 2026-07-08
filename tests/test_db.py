@@ -58,10 +58,10 @@ def _signal(symbol="AAPL", asset_class="us_equity", score=8, computed_at="2026-0
         "momentum": {
             "rsi": 60.0, "rsi_overbought": False, "macd_above_signal": True,
             "macd_histogram_positive": True, "macd_histogram_shrinking": False,
-            "adx": 30.0, "adx_falling": False, "atr": 2.0,
+            "adx": 30.0, "adx_falling": False, "atr": 2.0, "roc_pass": True,
         },
         "volume": {"volume": 1_000_000.0, "avg_volume": 800_000.0, "volume_ratio": 1.25, "volume_drying_up": False},
-        "relative_strength": {"rs_return": 5.0, "spy_return": 2.0, "outperforming_spy": True},
+        "relative_strength": {"rs_return": 5.0, "spy_return": 2.0, "outperforming_spy": True, "dual_rs": True},
         "exit": {
             "exit_mode": "trailing_stop", "warning_count": 0, "warnings": [],
             "trailing_stop_atr_range": (1.5, 3.0),

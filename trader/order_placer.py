@@ -6,6 +6,9 @@ Buy rules (Execution v3 — 2026-06-20):
   - price < $50  → 3 positions ($750)
   - Entry: market order at 9:45 AM ET (after first 15-min candle confirms direction)
   - Requires stock to appear in scan ≥2 consecutive days (confirms sustained momentum)
+  - Requires dual RS: outperforming SPY on both 21-day and 63-day windows
+  - Requires ROC20 ≥5%: price up ≥5% over last 20 days (acceleration filter)
+  - Skips if stock has gapped up >4% from prior close (avoid chasing opens)
   - Stop loss: price − ATR×1.5 (tight end), capped at 1% below entry
   - Take profit:
       trailing_stop mode  → price + ATR×6  (wide safety net — let the winner run)
@@ -308,9 +311,24 @@ def place_orders(candidates: list[dict]) -> list[dict]:
             log.info("[orders] Skip %s — MACD histogram shrinking (momentum fading)", symbol)
             continue
 
+        if not c["relative_strength"]["dual_rs"]:
+            log.info("[orders] Skip %s — dual RS failed (not outperforming SPY on both 21d and 63d)", symbol)
+            continue
+
+        if not c["momentum"]["roc_pass"]:
+            log.info("[orders] Skip %s — ROC20 below %.0f%% (no price acceleration)",
+                     symbol, config.ROC_MIN_PCT)
+            continue
+
         last_close = c["trend"]["last_close"]
         market_price = current_asks.get(symbol, last_close)
         atr_min    = c["exit"]["trailing_stop_atr_range"][0]
+
+        gap_pct = (market_price - last_close) / last_close if last_close > 0 else 0.0
+        if gap_pct > config.GAP_THRESHOLD_PCT:
+            log.info("[orders] Skip %s — gapped up %.1f%% at open, above %.0f%% threshold (chasing)",
+                     symbol, gap_pct * 100, config.GAP_THRESHOLD_PCT * 100)
+            continue
 
         stop_distance_pct = atr_min / market_price
         if stop_distance_pct > config.MAX_STOP_DISTANCE_PCT:

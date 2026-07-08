@@ -41,6 +41,12 @@ MIN_AVG_VOLUME = 500_000
 ATR_TRAILING_MIN = 1.5
 ATR_TRAILING_MAX = 3.0
 
+# Entry quality filters (+ALL-ENTRY)
+RS_SHORT_DAYS    = 21    # short-term RS lookback: both 21d and 63d must beat SPY (dual_rs)
+ROC_PERIOD       = 20    # rate-of-change lookback days
+ROC_MIN_PCT      = 5.0   # close must be up ≥5% over ROC_PERIOD (price acceleration)
+GAP_THRESHOLD_PCT = 0.04 # skip entry if current price gaps >4% above prior close
+
 # ── Execution rules ────────────────────────────────────────────────────────
 # Base dollar amount per 1 position
 POSITION_SIZE_DOLLARS = 250

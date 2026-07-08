@@ -23,6 +23,15 @@ def _migrate_signals(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE signals")
 
 
+def _add_signals_columns(conn: sqlite3.Connection) -> None:
+    """Add new columns to an existing signals table without losing data."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+    new_cols = [("dual_rs", "INTEGER DEFAULT 0"), ("roc_pass", "INTEGER DEFAULT 0")]
+    for col, defn in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {defn}")
+
+
 def init_db() -> None:
     with get_conn() as conn:
         _migrate_signals(conn)
@@ -113,6 +122,7 @@ def init_db() -> None:
                 completed_at     TEXT
             );
         """)
+        _add_signals_columns(conn)
 
 
 # --- Assets ---
@@ -236,6 +246,8 @@ def save_signals(records: list[dict]) -> None:
             "volume_drying_up": int(r["volume"]["volume_drying_up"]),
             "rs_return": r["relative_strength"]["rs_return"],
             "spy_return": r["relative_strength"]["spy_return"],
+            "dual_rs": int(r["relative_strength"]["dual_rs"]),
+            "roc_pass": int(r["momentum"]["roc_pass"]),
             "exit_mode": r["exit"]["exit_mode"],
             "warning_count": r["exit"]["warning_count"],
             "warnings": json.dumps(r["exit"]["warnings"]),
@@ -325,6 +337,7 @@ def load_signals(asset_class: str, min_score: int = 0) -> list[dict]:
                 "adx": row["adx"],
                 "adx_falling": bool(row["adx_falling"]),
                 "atr": row["atr"],
+                "roc_pass": bool(row.get("roc_pass", 0)),
             },
             "volume": {
                 "volume": row["volume"],
@@ -336,6 +349,7 @@ def load_signals(asset_class: str, min_score: int = 0) -> list[dict]:
                 "rs_return": row["rs_return"],
                 "spy_return": row["spy_return"],
                 "outperforming_spy": bool(row["outperforming_spy"]),
+                "dual_rs": bool(row.get("dual_rs", 0)),
             },
             "exit": {
                 "exit_mode": row["exit_mode"],
