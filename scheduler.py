@@ -75,7 +75,7 @@ def run_premarket() -> None:
         persistence = signal_persistence("us_equity")
         for c in candidates:
             c["days_in_scan"] = persistence.get(c["symbol"], 1)
-        result = validate(candidates[:config.AUTO_ORDER_TOP_N])
+        result = validate(candidates[:config.PREMARKET_VALIDATE_N])
         _save_run("premarket", time.monotonic() - t0)
         send_premarket_summary(result)
         log.info("=== Pre-market done: %d approved, %d warned, %d dropped ===",

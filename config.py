@@ -58,6 +58,12 @@ POSITION_MULTIPLIER = 3
 # Auto-order: how many top candidates to place orders for each morning
 AUTO_ORDER_TOP_N = 10
 
+# Pre-market validator: how many top candidates to validate at 9:15 AM.
+# Must be >= AUTO_ORDER_TOP_N. A wider pool ensures the order placer still has
+# valid candidates even when the top-ranked stocks fail signal filters (MACD
+# shrinking, fixed_take_profit, ADX weak, etc.).
+PREMARKET_VALIDATE_N = 30
+
 # Maximum number of concurrent open positions allowed.
 # No new orders are placed once this ceiling is reached.
 # Backtest showed 43-position pile-up degraded P&L; max 15 doubled it.
