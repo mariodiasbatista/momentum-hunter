@@ -77,10 +77,20 @@ class TestSend:
         with patch("requests.post", return_value=self._mock_resp(500)):
             _send("hello")  # must not raise
 
-    def test_does_not_raise_on_network_error(self):
-        with patch("requests.post", side_effect=Exception("connection refused")):
-            # The exception escapes _send but send_alert swallows it
-            pass  # _send itself will raise; callers must wrap — tested via send_alert below
+    def test_retries_on_connection_reset_then_succeeds(self):
+        from requests.exceptions import ConnectionError as ReqConnError
+        responses = [ReqConnError("Connection reset by peer"), self._mock_resp(200)]
+        with patch("requests.post", side_effect=responses) as mock_post, \
+             patch("time.sleep"):
+            _send("hello")  # must not raise
+            assert mock_post.call_count == 2
+
+    def test_gives_up_after_max_retries_on_connection_errors(self):
+        from requests.exceptions import ConnectionError as ReqConnError
+        from notifier.telegram import _MAX_RETRIES
+        with patch("requests.post", side_effect=ReqConnError("reset")), \
+             patch("time.sleep"):
+            _send("hello")  # must not raise
 
 
 class TestSendAlert:

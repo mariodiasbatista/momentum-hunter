@@ -15,7 +15,13 @@ log = logging.getLogger(__name__)
 def _send(text: str) -> None:
     payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     for attempt in range(_MAX_RETRIES):
-        resp = requests.post(_API_URL, json=payload)
+        try:
+            resp = requests.post(_API_URL, json=payload, timeout=10)
+        except requests.exceptions.ConnectionError as exc:
+            log.warning("[telegram] Connection error (attempt %d/%d): %s — retrying in 5s",
+                        attempt + 1, _MAX_RETRIES, exc)
+            time.sleep(5)
+            continue
         if resp.status_code == 429:
             wait = resp.json().get("parameters", {}).get("retry_after", 5)
             log.warning("[telegram] 429 rate-limit — sleeping %ds (attempt %d/%d)",
