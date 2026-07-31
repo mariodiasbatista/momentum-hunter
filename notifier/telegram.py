@@ -17,8 +17,8 @@ def _send(text: str) -> None:
     for attempt in range(_MAX_RETRIES):
         try:
             resp = requests.post(_API_URL, json=payload, timeout=10)
-        except requests.exceptions.ConnectionError as exc:
-            log.warning("[telegram] Connection error (attempt %d/%d): %s — retrying in 5s",
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            log.warning("[telegram] Network error (attempt %d/%d): %s — retrying in 5s",
                         attempt + 1, _MAX_RETRIES, exc)
             time.sleep(5)
             continue

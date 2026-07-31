@@ -92,6 +92,21 @@ class TestSend:
              patch("time.sleep"):
             _send("hello")  # must not raise
 
+    def test_retries_on_read_timeout_then_succeeds(self):
+        from requests.exceptions import ReadTimeout
+        responses = [ReadTimeout("read timed out"), self._mock_resp(200)]
+        with patch("requests.post", side_effect=responses) as mock_post, \
+             patch("time.sleep"):
+            _send("hello")  # must not raise
+            assert mock_post.call_count == 2
+
+    def test_gives_up_after_max_retries_on_timeout(self):
+        from requests.exceptions import ReadTimeout
+        from notifier.telegram import _MAX_RETRIES
+        with patch("requests.post", side_effect=ReadTimeout("read timed out")), \
+             patch("time.sleep"):
+            _send("hello")  # must not raise
+
 
 class TestSendAlert:
     def test_sends_message_with_alert_prefix(self):
