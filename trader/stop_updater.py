@@ -41,7 +41,8 @@ def _find_sell_orders(client, symbol: str) -> tuple:
         for o in orders:
             if getattr(o, "side", None) == OrderSide.SELL:
                 has_any_sell = True
-                if getattr(o, "type", None) == OrderType.STOP:
+                order_type = getattr(o, "type", None)
+                if order_type in (OrderType.STOP, OrderType.STOP_LIMIT):
                     stop_order = o
         return stop_order, has_any_sell
     except Exception as exc:
@@ -142,11 +143,17 @@ def update_trailing_stops() -> list[dict]:
                 "gain_pct":  round(gain_pct * 100, 1),
             })
         except Exception as exc:
+            exc_str = str(exc)
             # Race condition: price dropped between ask-fetch and order submission.
             # Downgrade to warning — the existing stop remains in place.
-            if "stop price must be less than current price" in str(exc) or "42210000" in str(exc):
+            if "stop price must be less than current price" in exc_str or "42210000" in exc_str:
                 log.warning("[stops] %s — stop price above market (price moved since fetch), skipping: %s",
                             symbol, exc)
+            elif "40310000" in exc_str:
+                # Shares already committed to bracket's stop-loss leg — position is protected.
+                # Detection missed the bracket child order; safe to skip.
+                log.warning("[stops] %s — shares held by active bracket stop (already protected), skipping",
+                            symbol)
             else:
                 log_api_error(log, f"[stops] ❌ Failed to update stop for {symbol}", exc)
 
