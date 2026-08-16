@@ -62,7 +62,9 @@ AUTO_ORDER_TOP_N = 10
 # Must be >= AUTO_ORDER_TOP_N. A wider pool ensures the order placer still has
 # valid candidates even when the top-ranked stocks fail signal filters (MACD
 # shrinking, fixed_take_profit, ADX weak, etc.).
-PREMARKET_VALIDATE_N = 30
+# Analysis on 2026-08-14: only 13 trailing_stop candidates pass all order
+# filters, spread across positions 1-100. Expanding to 100 captures all of them.
+PREMARKET_VALIDATE_N = 100
 
 # Maximum number of concurrent open positions allowed.
 # No new orders are placed once this ceiling is reached.
