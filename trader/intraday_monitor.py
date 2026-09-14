@@ -135,7 +135,7 @@ def run_intraday_check() -> list[dict]:
                   symbol, intraday_rsi, plpc, len(df))
 
         close_reason = None
-        if intraday_rsi > RSI_OVERBOUGHT:
+        if intraday_rsi > RSI_OVERBOUGHT and plpc >= 0:
             close_reason = f"15-min RSI={intraday_rsi:.1f} > {RSI_OVERBOUGHT} (overbought)"
         elif plpc >= config.MIN_GAIN_TAKE_PCT and intraday_rsi < 50:
             close_reason = (f"gain {plpc:.1f}% with fading momentum "

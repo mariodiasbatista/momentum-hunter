@@ -747,6 +747,19 @@ class TestIntradayMonitor:
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[65.0])
         assert len(closed) == 0
 
+    def test_holds_when_rsi_overbought_but_position_in_loss(self):
+        # RSI=72 > 65, but position is down -2% → do NOT RSI-exit a losing position
+        pos = _mock_position("AAPL", unrealized_plpc="-0.02")
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[72.0])
+        assert len(closed) == 0
+        client.close_position.assert_not_called()
+
+    def test_closes_when_rsi_overbought_and_position_at_breakeven(self):
+        # RSI=72 > 65, position at exactly 0% → still exit (>= 0 is the floor)
+        pos = _mock_position("AAPL", unrealized_plpc="0.0")
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[72.0])
+        assert len(closed) == 1
+
     def test_skips_symbol_with_no_bar_data(self, caplog):
         pos = _mock_position("NODATA")
         with caplog.at_level(logging.WARNING, logger="trader.intraday"):
