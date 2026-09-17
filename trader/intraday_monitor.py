@@ -4,7 +4,7 @@ trader/intraday_monitor.py — intraday RSI monitor on 15-minute bars.
 Runs every 30 minutes during market hours (10:15 AM – 3:00 PM ET).
 Fetches live 15-min bars for all open positions, recomputes RSI(14).
 Closes a position when any exit condition is met:
-  - 15-min RSI > RSI_OVERBOUGHT (70) — overbought intraday
+  - 15-min RSI > RSI_OVERBOUGHT (65) — overbought intraday
   - Unrealized loss > MAX_LOSS_PCT (5%) — stop loss
   - Gain >= MIN_GAIN_TAKE_PCT (8%) with RSI < 50 — momentum fading
   - Position held >= MAX_HOLD_DAYS (7) calendar days — time stop
@@ -25,7 +25,7 @@ from trader._utils import close_position_with_retry, log_api_error
 log = logging.getLogger("trader.intraday")
 
 RSI_PERIOD     = 14
-RSI_OVERBOUGHT = config.RSI_OVERBOUGHT  # 70
+RSI_OVERBOUGHT = config.RSI_OVERBOUGHT  # 65
 MAX_HOLD_DAYS  = config.MAX_HOLD_DAYS   # 7
 
 

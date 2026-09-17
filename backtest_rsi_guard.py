@@ -40,9 +40,12 @@ def position_qty(price):
 
 
 # ── Load signals ──────────────────────────────────────────────────────────────
+START_DATE = pd.Timestamp("2026-06-01")
+
 print("Loading cached signals…", flush=True)
 sdf = pd.read_pickle(CACHE_PATH)
 sdf["date"] = pd.to_datetime(sdf["date"])
+sdf = sdf[sdf["date"] >= START_DATE].copy()
 all_dates = sorted(sdf["date"].unique())
 print(f"  {len(sdf):,} rows | {sdf['symbol'].nunique():,} symbols")
 print(f"  Range: {str(all_dates[0])[:10]} → {str(all_dates[-1])[:10]} ({len(all_dates)} trading days)")

@@ -721,41 +721,41 @@ class TestIntradayMonitor:
             assert run_intraday_check() == []
 
     def test_closes_when_intraday_rsi_above_threshold(self):
-        # RSI_OVERBOUGHT = 70; RSI=72 > 70 → close
+        # RSI_OVERBOUGHT = 65; RSI=72 > 65 → close
         pos = _mock_position("AAPL")
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 72.0])
         assert len(closed) == 1
         assert closed[0]["symbol"] == "AAPL"
         client.close_position.assert_called_once_with("AAPL")
 
-    def test_holds_when_intraday_rsi_between_65_and_70(self):
-        # RSI_OVERBOUGHT raised from 65 → 70; RSI=68 no longer triggers exit
+    def test_closes_when_intraday_rsi_between_65_and_70(self):
+        # RSI_OVERBOUGHT = 65; RSI=68 > 65 → close
         pos = _mock_position("AAPL")
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[68.0])
-        assert len(closed) == 0
+        assert len(closed) == 1
 
     def test_holds_when_intraday_rsi_below_threshold(self):
-        # RSI=69 < 70 → hold
+        # RSI=64 < 65 → hold
         pos = _mock_position("AAPL")
-        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 69.0])
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[50.0, 64.0])
         assert len(closed) == 0
         client.close_position.assert_not_called()
 
     def test_holds_exactly_at_rsi_overbought_threshold(self):
-        # RSI=70 is NOT strictly > 70 → hold (threshold is exclusive)
+        # RSI=65 is NOT strictly > 65 → hold (threshold is exclusive)
         pos = _mock_position("AAPL")
-        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[70.0])
+        closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[65.0])
         assert len(closed) == 0
 
     def test_holds_when_rsi_overbought_but_position_in_loss(self):
-        # RSI=72 > 70, but position is down -2% → do NOT RSI-exit a losing position
+        # RSI=72 > 65, but position is down -2% → do NOT RSI-exit a losing position
         pos = _mock_position("AAPL", unrealized_plpc="-0.02")
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[72.0])
         assert len(closed) == 0
         client.close_position.assert_not_called()
 
     def test_closes_when_rsi_overbought_and_position_at_breakeven(self):
-        # RSI=72 > 70, position at exactly 0% → still exit (>= 0 is the floor)
+        # RSI=72 > 65, position at exactly 0% → still exit (>= 0 is the floor)
         pos = _mock_position("AAPL", unrealized_plpc="0.0")
         closed, client = self._run([pos], {"AAPL": _make_bars()}, rsi_values=[72.0])
         assert len(closed) == 1
@@ -1110,4 +1110,4 @@ class TestIntradayMaxHold:
     def test_skips_max_hold_when_no_entry_date_recorded(self):
         # No entry date in orders file → max-hold check skipped, RSI check proceeds
         closed, client = self._run_with_entry_date(None, rsi_values=[55.0])
-        assert len(closed) == 0  # RSI=55 < 70, no other exit → holds
+        assert len(closed) == 0  # RSI=55 < 65, no other exit → holds
