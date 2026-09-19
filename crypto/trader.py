@@ -35,6 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import config
+from crypto import fees
 from crypto.exit_levels import adaptive_tp
 from trader._utils import log_api_error
 
@@ -68,7 +69,7 @@ def _save_state(state: dict) -> None:
 
 
 def _record_entry(symbol: str, entry_price: float, stop_price: float,
-                  tp_pct: float, tp_kind: str) -> None:
+                  tp_pct: float, tp_kind: str, fee_rate: float) -> None:
     state = _load_state()
     state[symbol] = {
         "entry_date": date.today().isoformat(),
@@ -77,6 +78,9 @@ def _record_entry(symbol: str, entry_price: float, stop_price: float,
         "tp_pct": tp_pct,
         "tp_price": entry_price * (1 + tp_pct),
         "tp_kind": tp_kind,
+        # Measured on this buy, so the exit prices its fee off the tier the account
+        # was actually on rather than a constant that may have gone stale.
+        "fee_rate": fee_rate,
     }
     _save_state(state)
 
@@ -119,6 +123,14 @@ def _save_watchlist(candidates: list[dict], eligible: list[dict]) -> None:
             "eligible": c["symbol"] in eligible_symbols,
         } for c in candidates],
     }, indent=2))
+
+
+def _buy_fee(rec: dict) -> float:
+    """Taker rate measured when this position was opened, or the configured default.
+
+    Positions opened before the rate was measured per trade have no recorded value.
+    """
+    return float(rec.get("fee_rate") or config.CRYPTO_FEE_TAKER_PCT)
 
 
 def _record_trade(trade: dict) -> None:
@@ -263,7 +275,8 @@ def record_tp_fills(client=None) -> list[dict]:
     or Telegram — it would look like the position silently vanished.
     """
     from alpaca.trading.requests import GetOrdersRequest
-    from alpaca.trading.enums import AssetClass, OrderSide, OrderStatus, QueryOrderStatus
+    from alpaca.trading.enums import (AssetClass, OrderSide, OrderStatus, OrderType,
+                                      QueryOrderStatus)
 
     client = client or _client()
     lookback = datetime.now(timezone.utc) - timedelta(days=config.CRYPTO_MAX_HOLD_DAYS + 1)
@@ -297,25 +310,31 @@ def record_tp_fills(client=None) -> list[dict]:
         entry = float(rec["entry_price"])
         exit_price = float(order.filled_avg_price)
         qty = float(order.filled_qty or 0)
-        gain = (exit_price - entry) / entry
         try:
             held = (date.today() - date.fromisoformat(rec["entry_date"])).days
         except Exception:
             held = 0
 
+        # This sell rested on the book before it filled, so it is charged the maker
+        # rate — roughly a third less than the taker rate the entry paid.
+        buy_fee = _buy_fee(rec)
+        sell_fee = (fees.maker_rate(buy_fee) if order.order_type == OrderType.LIMIT
+                    else buy_fee)
+        pnl, pnl_pct = fees.net_pnl(entry, exit_price, qty, buy_fee, sell_fee)
         trade = {
             "symbol": symbol, "reason": "take profit",
             "entry_price": entry, "exit_price": exit_price, "qty": qty,
-            "pnl": round((exit_price - entry) * qty, 2),
-            "pnl_pct": round(gain * 100, 2),
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "gross_pnl": round((exit_price - entry) * qty, 2),
             "held_days": held,
             "exited_at": str(order.filled_at),
             "order_id": str(order.id),
         }
         _record_trade(trade)
         _forget(symbol)
-        log.info("[crypto] 🎯 Target filled %s @ $%.4f | %+.2f%% | $%+.2f",
-                 symbol, exit_price, gain * 100, trade["pnl"])
+        log.info("[crypto] 🎯 Target filled %s @ $%.4f | %+.2f%% net | $%+.2f",
+                 symbol, exit_price, pnl_pct, pnl)
         recorded.append({**trade, "price": exit_price, "entry": entry})
 
     return recorded
@@ -389,13 +408,16 @@ def manage_exits(indicators: dict[str, dict]) -> list[dict]:
             continue
 
         _forget(symbol)
-        pnl = (price - entry) * float(pos.qty)
-        log.info("[crypto] 🔻 Closed %s @ $%.4f | %s | %+.2f%% | $%+.2f",
-                 symbol, price, reason, gain * 100, pnl)
+        # Sold at market, so both sides of this round trip pay the taker rate.
+        buy_fee = _buy_fee(rec)
+        pnl, pnl_pct = fees.net_pnl(entry, price, float(pos.qty), buy_fee, buy_fee)
+        log.info("[crypto] 🔻 Closed %s @ $%.4f | %s | %+.2f%% net | $%+.2f",
+                 symbol, price, reason, pnl_pct, pnl)
         trade = {
             "symbol": symbol, "reason": reason,
             "entry_price": entry, "exit_price": price, "qty": float(pos.qty),
-            "pnl": round(pnl, 2), "pnl_pct": round(gain * 100, 2),
+            "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 2),
+            "gross_pnl": round((price - entry) * float(pos.qty), 2),
             "held_days": held, "exited_at": datetime.now(timezone.utc).isoformat(),
             # Lets record_tp_fills recognise this sell as already booked.
             "order_id": str(getattr(order, "id", "")),
@@ -437,6 +459,33 @@ def _await_fill(client, order_id, timeout: float = 20.0):
         time.sleep(1.0)
     log.warning("[crypto] Entry order %s did not fill within %.0fs", order_id, timeout)
     return None
+
+
+def _measure_fee(client, symbol: str, filled) -> float:
+    """Taker rate this buy paid, from the gap between the qty paid for and received.
+
+    Alpaca deducts the crypto fee in the asset and reports it nowhere on the order,
+    so this gap is the only reliable reading of it. Falls back to the configured
+    rate when the fill or the fresh position cannot be read — the entry is already
+    open by then and is not worth unwinding over a fee measurement.
+    """
+    default = config.CRYPTO_FEE_TAKER_PCT
+    if filled is None:
+        return default
+    try:
+        pos = open_crypto_positions(client).get(symbol)
+        rate = fees.observed_taker_rate(float(filled.filled_qty or 0), float(pos.qty))
+    except Exception as exc:
+        log.warning("[crypto] Could not measure fee on %s: %s", symbol, exc)
+        return default
+    if rate is None:
+        log.warning("[crypto] %s fee reading implausible — using %.4f%%",
+                    symbol, default * 100)
+        return default
+    if abs(rate - default) > 1e-6:
+        log.info("[crypto] %s charged %.4f%%, not the configured %.4f%% — "
+                 "the volume tier may have changed", symbol, rate * 100, default * 100)
+    return rate
 
 
 def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
@@ -495,8 +544,9 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
         filled = _await_fill(client, order.id)
         entry_price = float(filled.filled_avg_price) if filled else price
         stop = min(entry_price - atr * 1.5, entry_price * (1 - config.CRYPTO_STOP_PCT))
+        fee_rate = _measure_fee(client, symbol, filled)
 
-        _record_entry(symbol, entry_price, stop, tp_pct, tp_kind)
+        _record_entry(symbol, entry_price, stop, tp_pct, tp_kind, fee_rate)
         log.info("[crypto] ✅ %s $%d @ $%.4f | stop $%.4f | tp +%.1f%% (%s) | score %d",
                  symbol, config.CRYPTO_POSITION_SIZE_DOLLARS, entry_price, stop,
                  tp_pct * 100, tp_kind, c["score"])

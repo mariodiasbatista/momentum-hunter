@@ -294,4 +294,6 @@ def test_closing_a_crypto_position_books_it_to_the_crypto_ledger(crypto_files, m
     booked = trader.load_trades(today_only=True)
     assert booked[0]["symbol"] == "BTC/USD"
     assert booked[0]["qty"] == 0.01          # fractional, not rounded away
-    assert booked[0]["pnl"] == pytest.approx(0.09)
+    # $0.09 gross, but the 0.25%-a-side fee takes a cent of it
+    assert booked[0]["gross_pnl"] == pytest.approx(0.09)
+    assert booked[0]["pnl"] == pytest.approx(0.08)

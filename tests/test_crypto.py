@@ -424,8 +424,10 @@ def test_broker_filled_target_is_booked_to_the_ledger(state_file, trades_file):
     recorded = trader.record_tp_fills(client)
 
     assert [t["reason"] for t in recorded] == ["take profit"]
-    assert recorded[0]["pnl"] == pytest.approx(20.0)
-    assert recorded[0]["pnl_pct"] == pytest.approx(8.0)
+    # +8% gross, less 0.25% taker in and 0.15% maker out on the rested target
+    assert recorded[0]["gross_pnl"] == pytest.approx(20.0)
+    assert recorded[0]["pnl"] == pytest.approx(18.97, abs=0.01)
+    assert recorded[0]["pnl_pct"] == pytest.approx(7.57, abs=0.01)
     assert trader.load_trades()[0]["symbol"] == "BTC/USD"
     assert json.loads(state_file.read_text()) == {}     # position forgotten
 
@@ -562,3 +564,150 @@ def test_run_cycle_manages_exits_but_places_no_entries_when_flag_off(monkeypatch
     assert exits, "exits must run with the flag off"
     assert entries == [[]], "no candidate may be offered for entry with the flag off"
     assert saved == [[]], "watchlist must not advertise names we will not buy"
+
+
+# ── Fees ─────────────────────────────────────────────────────────────────────
+
+def test_net_pnl_charges_a_fee_on_both_sides():
+    """Taker in, taker out — a flat round trip at market loses money."""
+    from crypto.fees import net_pnl
+
+    pnl, pnl_pct = net_pnl(100.0, 100.0, 10.0, buy_fee=0.0025, sell_fee=0.0025)
+    assert pnl < 0
+    assert pnl_pct == pytest.approx(-0.4994, abs=1e-3)   # ~2 × 0.25%
+
+
+def test_resting_target_is_cheaper_than_selling_at_market():
+    """The whole point of the maker/taker split: a rested exit keeps 0.1% more."""
+    from crypto.fees import net_pnl
+
+    _, maker_pct = net_pnl(100.0, 103.0, 1.0, buy_fee=0.0025, sell_fee=0.0015)
+    _, taker_pct = net_pnl(100.0, 103.0, 1.0, buy_fee=0.0025, sell_fee=0.0025)
+    assert maker_pct > taker_pct
+    assert maker_pct - taker_pct == pytest.approx(0.103, abs=0.005)
+
+
+def test_net_pnl_matches_the_live_link_round_trip():
+    """The 2026-09-19 LINK/USD trade: market buy, then a target that rested 9h."""
+    from crypto.fees import net_pnl
+
+    pnl, pnl_pct = net_pnl(12.239, 12.660068, 19.990620941,
+                           buy_fee=0.0025, sell_fee=0.0015)
+    gross = (12.660068 - 12.239) * 19.990620941
+    assert gross == pytest.approx(8.42, abs=0.01)
+    assert pnl == pytest.approx(7.42, abs=0.01)
+    assert pnl_pct == pytest.approx(3.03, abs=0.01)
+
+
+def test_fee_eats_an_eighth_of_the_target_floor():
+    """Most majors clamp to the 3% tp_min. Documents why churn is not free."""
+    from crypto.fees import net_pnl
+
+    _, net_pct = net_pnl(100.0, 103.0, 1.0, buy_fee=0.0025, sell_fee=0.0015)
+    assert (3.0 - net_pct) / 3.0 == pytest.approx(0.132, abs=0.01)
+
+
+def test_taker_rate_is_read_from_the_quantity_gap():
+    """The live LINK buy: paid for 20.0407 units, the position received 19.9906."""
+    from crypto.fees import observed_taker_rate
+
+    assert observed_taker_rate(20.040722748, 19.990620941) == pytest.approx(0.0025, abs=1e-7)
+
+
+@pytest.mark.parametrize("paid,received", [
+    (0.0, 1.0),        # no buy to measure
+    (1.0, 0.0),        # no position to compare against
+    (1.0, 0.9),        # 10% gap is not a fee — a partial fill or a pre-existing holding
+    (1.0, 1.5),        # received more than paid for
+    (1.0, -1.0),       # nonsense quantity
+])
+def test_implausible_quantity_pairs_yield_no_rate(paid, received):
+    """A bad reading taken at face value would corrupt every P&L that followed."""
+    from crypto.fees import observed_taker_rate
+
+    assert observed_taker_rate(paid, received) is None
+
+
+def test_measured_taker_rate_identifies_the_tier_for_the_maker_half():
+    """Only the taker side is observable, so the maker rate rides on the tier it names."""
+    from crypto.fees import maker_rate
+
+    assert maker_rate(0.0025) == 0.0015      # tier 1, where the account sits
+    assert maker_rate(0.0018) == 0.0008      # $1M–10M
+    assert maker_rate(0.0010) == 0.0000      # $100M+
+    # A measurement lands a hair off the published figure; it must still pick a tier.
+    assert maker_rate(0.002499) == 0.0015
+
+
+def _entry_client(monkeypatch, paid: str, received: str):
+    """A client whose buy fills for `paid` units but delivers `received` to the position."""
+    from alpaca.trading.enums import OrderStatus
+
+    client = _FakeClient([])
+
+    def submit(req):
+        client.orders.append(req)
+        client._positions = [_FakePosition("BTCUSD", received, 100.0)]
+        return SimpleNamespace(id="buy-1")
+
+    monkeypatch.setattr(client, "submit_order", submit)
+    monkeypatch.setattr(client, "get_order_by_id", lambda order_id: SimpleNamespace(
+        id=order_id, status=OrderStatus.FILLED, filled_avg_price="100.0", filled_qty=paid))
+    monkeypatch.setattr(trader, "_client", lambda: client)
+    monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
+    return client
+
+
+def test_entry_records_the_fee_rate_the_buy_actually_paid(monkeypatch, state_file):
+    """Alpaca never reports the fee, so the qty gap is the only reading of the tier.
+
+    Uses a rate *above* the published schedule: a measurement clamped to today's
+    top tier would reinstate the stale-constant problem it exists to solve.
+    """
+    _entry_client(monkeypatch, paid="2.5", received="2.4925")   # 0.30%
+
+    trader.place_entries([{"symbol": "BTC/USD", "score": 7,
+                           "momentum": {"atr": 1.0}}], bars={})
+
+    recorded = json.loads(state_file.read_text())["BTC/USD"]["fee_rate"]
+    assert recorded == pytest.approx(0.0030, abs=1e-7)
+
+
+def test_unreadable_fill_falls_back_to_the_configured_rate(monkeypatch, state_file):
+    """A fee measurement is not worth failing an entry that is already open."""
+    client = _FakeClient([])
+    monkeypatch.setattr(trader, "_client", lambda: client)
+    monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
+
+    trader.place_entries([{"symbol": "BTC/USD", "score": 7,
+                           "momentum": {"atr": 1.0}}], bars={})
+
+    recorded = json.loads(state_file.read_text())["BTC/USD"]["fee_rate"]
+    assert recorded == config.CRYPTO_FEE_TAKER_PCT
+
+
+def test_exit_prices_its_fee_off_the_rate_measured_at_entry(monkeypatch, state_file, trades_file):
+    """A tier change must reach the ledger without anyone editing config."""
+    _arm(state_file, entry=100.0)
+    state = json.loads(state_file.read_text())
+    state["BTC/USD"]["fee_rate"] = 0.0018          # tier 4: maker 0.08%
+    state_file.write_text(json.dumps(state))
+
+    client = _FakeClient([], closed_orders=[
+        _fake_order(order_id="tp-7", filled_avg_price="108.0", filled_qty="2.5")])
+    recorded = trader.record_tp_fills(client)
+
+    from crypto.fees import net_pnl
+    expected, _ = net_pnl(100.0, 108.0, 2.5, buy_fee=0.0018, sell_fee=0.0008)
+    assert recorded[0]["pnl"] == pytest.approx(round(expected, 2))
+    assert recorded[0]["pnl"] > 18.97              # cheaper tier than the default
+
+
+def test_ledger_keeps_gross_alongside_net(trades_file):
+    """Net is what /summary reports; gross stays so the fee drag is auditable."""
+    from crypto import trader
+
+    trader._record_trade({"symbol": "X/USD", "pnl": 7.17, "gross_pnl": 8.42})
+    booked = trader.load_trades(today_only=True)
+    assert booked[0]["pnl"] == 7.17
+    assert booked[0]["gross_pnl"] == 8.42

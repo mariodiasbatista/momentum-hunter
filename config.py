@@ -134,6 +134,12 @@ CRYPTO_MIN_DOLLAR_VOLUME = 5_000
 CRYPTO_QUOTE          = "/USD"
 CRYPTO_EXCLUDE_SYMBOLS = {"USDC/USD", "USDT/USD", "USDG/USD", "USDT/USDC", "DAI/USD"}
 
+# Fallback only. Alpaca's crypto fee is maker/taker on 30-day volume tiers, and the
+# real rate is measured from every buy's quantity gap (see crypto/fees.py) — this is
+# what the first tier charges a taker, used when a position predates that measurement
+# or the reading fails. Equities are commission-free, so it applies to crypto alone.
+CRYPTO_FEE_TAKER_PCT = 0.0025
+
 # Exit rules — TP-new-ST adaptive take-profit, horizon 7 (backtested 2026-09-17).
 # Unlike equities, where any hard take-profit truncates the right tail and loses
 # money, crypto exits in 1.5–2.6 days on average and a hard target wins.
