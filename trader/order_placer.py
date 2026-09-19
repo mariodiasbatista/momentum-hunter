@@ -23,7 +23,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import config
-from trader._utils import log_api_error
+from trader._utils import equity_positions, log_api_error
 
 log = logging.getLogger("trader.orders")
 
@@ -220,7 +220,7 @@ def place_orders(candidates: list[dict]) -> list[dict]:
 
     # Fetch open positions, then apply cooldown only to those within the window
     try:
-        open_symbols = {p.symbol for p in client.get_all_positions()}
+        open_symbols = {p.symbol for p in equity_positions(client)}
     except Exception as exc:
         log.warning("[orders] Could not fetch open positions: %s", exc)
         open_symbols = set()

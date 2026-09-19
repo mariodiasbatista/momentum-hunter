@@ -6,6 +6,7 @@ Jobs (all Mon–Fri, times ET unless noted):
   - monitor : 15:30 ET  — exit monitor: close positions where RSI>70 or 2+ warnings
   - ingest  : 21:30 UTC — fetch Alpaca bars + compute signals (30 min after market close)
   - notify  : 22:00 UTC — send top 10 watchlist + P&L to Telegram
+  - crypto  : every 4h  — separate crypto path, 24/7, off unless /setfeature=crypto_on
   - bot     : background thread — long-polls Telegram for /schedule, /loglevel, /setlevel
 
 Run as a service:
@@ -155,7 +156,8 @@ def run_monitor() -> None:
         from alpaca.trading.client import TradingClient
         paper = "paper-api" in config.ALPACA_BASE_URL
         client = TradingClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, paper=paper)
-        total_positions = len(client.get_all_positions())
+        from trader._utils import equity_positions
+        total_positions = len(equity_positions(client))
         all_signals = load_signals("us_equity", min_score=0)
         signals_map = {s["symbol"]: s for s in all_signals}
         closed = check_and_exit(signals_map)
@@ -166,6 +168,30 @@ def run_monitor() -> None:
         log.exception("Exit monitor failed")
         from notifier.telegram import send_alert
         send_alert(f"Exit monitor failed: `{exc}`")
+
+
+def run_crypto() -> None:
+    # The flag gates entries, not exits. Anything already held must keep being
+    # managed while it winds down — crypto has no broker-side stop to fall back on.
+    from notifier.feature_flags import is_enabled
+    entries_enabled = is_enabled("crypto")
+    t0 = time.monotonic()
+    try:
+        from crypto.trader import has_open_positions, run_cycle, send_cycle_summary
+        if not entries_enabled and not has_open_positions():
+            log.debug("=== Crypto cycle skipped — flag off, nothing held ===")
+            return
+        log.info("=== Crypto cycle (4-hourly, 24/7)%s ===",
+                 "" if entries_enabled else " — flag off, exits only")
+        result = run_cycle()
+        _save_run("crypto", time.monotonic() - t0)
+        send_cycle_summary(result)
+        log.info("=== Crypto cycle done: %d closed, %d placed ===",
+                 len(result["closed"]), len(result["placed"]))
+    except Exception as exc:
+        log.exception("Crypto cycle failed")
+        from notifier.telegram import send_alert
+        send_alert(f"Crypto cycle failed: `{exc}`")
 
 
 def run_notify() -> None:
@@ -255,6 +281,16 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
+    # Crypto trades 24/7, so this runs every 4 hours on every day of the week.
+    # Gated on the `crypto` feature flag, which is off by default.
+    scheduler.add_job(
+        run_crypto,
+        CronTrigger(hour="0,4,8,12,16,20", minute=5, timezone="UTC"),
+        id="crypto",
+        name="Crypto cycle",
+        misfire_grace_time=600,
+    )
+
     # 22:00 UTC = after ingest has time to finish
     scheduler.add_job(
         run_notify,
@@ -264,7 +300,7 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
-    log.info("Scheduler started. Jobs: premarket@9:15ET, stops@9:40ET, orders@9:45ET, intraday@every30min(10-15ET), monitor@15:30ET, ingest@21:30UTC, notify@22:00UTC (Mon–Fri)")
+    log.info("Scheduler started. Jobs: premarket@9:15ET, stops@9:40ET, orders@9:45ET, intraday@every30min(10-15ET), monitor@15:30ET, ingest@21:30UTC, notify@22:00UTC (Mon–Fri); crypto@every4h (24/7, flag-gated)")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

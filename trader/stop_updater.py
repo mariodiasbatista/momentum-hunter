@@ -11,7 +11,7 @@ Never lowers a stop.
 import logging
 
 import config
-from trader._utils import log_api_error
+from trader._utils import equity_positions, log_api_error
 
 log = logging.getLogger("trader.stops")
 
@@ -62,7 +62,7 @@ def update_trailing_stops() -> list[dict]:
     client = _get_client()
 
     try:
-        positions = client.get_all_positions()
+        positions = equity_positions(client)
     except Exception as exc:
         log_api_error(log, "[stops] Failed to fetch open positions", exc)
         return []

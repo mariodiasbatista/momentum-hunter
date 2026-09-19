@@ -5,6 +5,8 @@ Commands:
   /schedule        — show today's job schedule and watchlist
   /loglevel        — show current Telegram log level
   /setlevel <N>    — set log level (0=off 1=debug 2=info 3=errors only)
+  /feature         — show available feature flags and their status
+  /setfeature=X_on — toggle a feature flag on/off
 """
 import logging
 import time
@@ -62,6 +64,8 @@ def _cmd_help(chat_id: int, args: list) -> None:
         "/summary — Today's P&L summary on demand\n"
         "/loglevel — Show current Telegram log level\n"
         "/setlevel — Set log level (0=off 1=debug 2=info 3=errors only)\n"
+        "/feature — Show available feature flags and their status\n"
+        "/setfeature — Toggle a feature (`/setfeature=crypto_on`)\n"
         "/help — Show this message"
     ))
 
@@ -80,6 +84,37 @@ def _cmd_setlevel(chat_id: int, args: list) -> None:
     label = LEVEL_LABELS[level]
     _reply(chat_id, f"✅ Log level set to *{level} — {label}*")
     log.info("Telegram log level changed to %d (%s)", level, label)
+
+
+def build_feature_message() -> str:
+    from notifier.feature_flags import status
+    lines = ["🎛 *Feature Flags*\n"]
+    for name, enabled, description in status():
+        lines.append(f"{'🟢' if enabled else '⚪️'} `{name}` — *{'ON' if enabled else 'OFF'}*")
+        if description:
+            lines.append(f"   _{description}_")
+        lines.append(f"   toggle: `/setfeature={name}_{'off' if enabled else 'on'}`")
+    return "\n".join(lines)
+
+
+@_register("/feature")
+@_register("/features")
+def _cmd_feature(chat_id: int, args: list) -> None:
+    _reply(chat_id, build_feature_message())
+
+
+@_register("/setfeature")
+def _cmd_setfeature(chat_id: int, args: list) -> None:
+    from notifier.feature_flags import parse_arg, set_flag, DEFAULTS
+    parsed = parse_arg(args[0]) if args else None
+    if parsed is None:
+        names = " ".join(f"`{n}_on`/`{n}_off`" for n in sorted(DEFAULTS))
+        _reply(chat_id, f"Usage: `/setfeature=crypto_on`\nAvailable: {names}")
+        return
+    name, enabled = parsed
+    set_flag(name, enabled)
+    _reply(chat_id, f"✅ Feature *{name}* is now {'🟢 ON' if enabled else '⚪️ OFF'}")
+    log.info("Feature flag %s set to %s", name, enabled)
 
 
 def run_forever() -> None:
@@ -109,6 +144,11 @@ def run_forever() -> None:
                 # Strip @botname suffix and split into cmd + args
                 parts = raw_text.split("@")[0].split()
                 cmd, args = parts[0], parts[1:]
+
+                # `/setfeature=crypto_on` arrives as one token — peel the value off
+                if "=" in cmd:
+                    cmd, value = cmd.split("=", 1)
+                    args = [value] + args
 
                 handler = _COMMANDS.get(cmd)
                 if handler:

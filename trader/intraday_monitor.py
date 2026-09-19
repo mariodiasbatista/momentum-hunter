@@ -20,7 +20,7 @@ from datetime import date
 import pandas_ta as ta
 
 import config
-from trader._utils import close_position_with_retry, log_api_error
+from trader._utils import close_position_with_retry, equity_positions, log_api_error
 
 log = logging.getLogger("trader.intraday")
 
@@ -53,7 +53,7 @@ def run_intraday_check() -> list[dict]:
     client = _get_trading_client()
 
     try:
-        positions = client.get_all_positions()
+        positions = equity_positions(client)
     except Exception as exc:
         log_api_error(log, "[intraday] Failed to fetch open positions", exc)
         return []

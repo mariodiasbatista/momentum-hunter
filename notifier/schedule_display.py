@@ -77,6 +77,12 @@ def build_schedule_message() -> str:
 
         lines.append(f"{icon}  `{time_label}` {label}{duration}")
 
+    # Crypto runs 24/7 on its own 4-hour UTC cadence, so it has no place in the
+    # ET market-day table above.
+    from notifier.feature_flags import is_enabled
+    if is_enabled("crypto"):
+        lines.append("🔄  `every 4h` ₿ Crypto Cycle — 24/7")
+
     # Top candidates from last scan
     try:
         from data.db import load_signals

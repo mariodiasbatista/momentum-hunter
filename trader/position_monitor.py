@@ -12,7 +12,7 @@ Positions not found in today's signals are left untouched (logged as warning).
 import logging
 
 import config
-from trader._utils import close_position_with_retry, log_api_error
+from trader._utils import close_position_with_retry, equity_positions, log_api_error
 
 log = logging.getLogger("trader.monitor")
 
@@ -39,7 +39,7 @@ def check_and_exit(signals: dict) -> list[dict]:
     client = _get_client()
 
     try:
-        positions = client.get_all_positions()
+        positions = equity_positions(client)
     except Exception as exc:
         log_api_error(log, "[monitor] Failed to fetch open positions", exc)
         return []

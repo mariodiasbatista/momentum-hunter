@@ -111,3 +111,42 @@ CRYPTO_PAIRS = [
     "MATIC/USD",
     "DOT/USD",
 ]
+
+# ── Crypto trading path (separate from equities, gated by the `crypto` flag) ──
+# Everything below applies ONLY to the crypto path in crypto/. The equity path
+# never reads these, and the crypto path never reads the equity execution rules.
+# See crypto/trader.py for why the two cannot share an order function.
+
+# Capital is ring-fenced: crypto positions do not consume equity slots and the
+# crypto budget is CRYPTO_POSITION_SIZE_DOLLARS × CRYPTO_MAX_CONCURRENT.
+CRYPTO_POSITION_SIZE_DOLLARS = 250
+CRYPTO_MAX_CONCURRENT        = 5
+CRYPTO_ORDER_TOP_N           = 3
+
+# Alpaca reports only its own venue's crypto volume, not market-wide: BTC/USD
+# averages ~$240k/day here against billions globally. This is a relative
+# liquidity rank within Alpaca, not a real liquidity floor.
+CRYPTO_MIN_DOLLAR_VOLUME = 5_000
+
+# /USDC, /USDT and /BTC quotes are the same asset priced differently — trading
+# them alongside /USD would multiply exposure to one coin. Stablecoins score
+# highly on nothing and trade flat by design.
+CRYPTO_QUOTE          = "/USD"
+CRYPTO_EXCLUDE_SYMBOLS = {"USDC/USD", "USDT/USD", "USDG/USD", "USDT/USDC", "DAI/USD"}
+
+# Exit rules — TP-new-ST adaptive take-profit, horizon 7 (backtested 2026-09-17).
+# Unlike equities, where any hard take-profit truncates the right tail and loses
+# money, crypto exits in 1.5–2.6 days on average and a hard target wins.
+CRYPTO_MAX_HOLD_DAYS = 7
+CRYPTO_STOP_PCT      = 0.05
+CRYPTO_RSI_EXIT      = 65
+CRYPTO_TP_HORIZON    = 7
+CRYPTO_TP_FLAT       = 0.08
+CRYPTO_TP_CONFIG     = {
+    "keep_flat_reach_pct":      50,
+    "target_reach_probability": 0.7,
+    "lookback_days":            400,
+    "min_windows":              40,
+    "tp_min":                   0.03,
+    "tp_max":                   0.60,
+}
