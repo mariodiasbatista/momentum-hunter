@@ -115,7 +115,7 @@ def scan_for_fills() -> list[dict]:
     Deduplicates — symbols already recorded today are skipped.
     """
     from alpaca.trading.requests import GetOrdersRequest
-    from alpaca.trading.enums import QueryOrderStatus, OrderSide
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, QueryOrderStatus
     from trader.order_placer import load_entry_for_symbol
 
     already_recorded = _recorded_today()
@@ -137,15 +137,27 @@ def scan_for_fills() -> list[dict]:
 
     log.debug("[recorder] Alpaca returned %d closed sell order(s) today", len(closed_sells))
 
+    from alpaca.trading.enums import AssetClass
+
     new_fills = []
     for order in closed_sells:
         symbol = order.symbol
+
+        # Crypto sells are booked by crypto/trader.py into its own ledger. Left
+        # here they would resolve to a zero entry price (orders_placed.json is
+        # equity-only) and a zero qty (fractional truncated to int).
+        if order.asset_class == AssetClass.CRYPTO:
+            log.debug("[recorder] %s — crypto, handled by the crypto path", symbol)
+            continue
 
         if symbol in already_recorded:
             log.debug("[recorder] %s — already recorded today, skipping", symbol)
             continue
 
-        if str(order.status) != "filled" or not order.filled_avg_price:
+        # Compare enum members, not str(): the SDK renders OrderStatus.FILLED as
+        # "OrderStatus.FILLED", so a string comparison never matches and every
+        # fill is silently skipped.
+        if order.status != OrderStatus.FILLED or not order.filled_avg_price:
             log.debug("[recorder] %s — status=%s, not filled, skipping", symbol, order.status)
             continue
 
@@ -153,13 +165,13 @@ def scan_for_fills() -> list[dict]:
         entry_price  = float(order_details.get("entry_price", 0.0))
         qty          = int(float(order.qty or order_details.get("qty", 1)))
         exit_price   = float(order.filled_avg_price)
-        order_type   = str(order.order_type).lower()
 
-        # Distinguish TP (limit sell) from SL (stop sell)
-        if "limit" in order_type:
-            reason = "take_profit"
-        elif "stop" in order_type:
+        # Bracket legs: the take-profit is a plain limit, the stop is a stop or
+        # stop-limit. Ordered so stop-limit is not mistaken for a take-profit.
+        if order.order_type in (OrderType.STOP, OrderType.STOP_LIMIT):
             reason = "stop_loss"
+        elif order.order_type == OrderType.LIMIT:
+            reason = "take_profit"
         else:
             reason = "unknown"
 

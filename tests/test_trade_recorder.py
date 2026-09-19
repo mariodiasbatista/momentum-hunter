@@ -11,13 +11,25 @@ import pytest
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_TYPES = {"limit": "LIMIT", "stop": "STOP", "stop_limit": "STOP_LIMIT", "market": "MARKET"}
+
+
 def _mock_order(symbol, order_type, filled_avg_price, qty=10, status="filled"):
+    """Builds orders from the real SDK enums.
+
+    An earlier version set these to plain strings, which made `str(o.status)`
+    return "filled" in tests while the live SDK returns "OrderStatus.FILLED" —
+    so the recorder's status check passed every test and skipped every real fill.
+    """
+    from alpaca.trading.enums import OrderStatus, OrderType
+
     o = MagicMock()
     o.symbol = symbol
-    o.order_type = order_type        # "limit" → TP, "stop" → SL
+    o.order_type = getattr(OrderType, _TYPES[order_type])
     o.filled_avg_price = filled_avg_price
     o.qty = str(qty)
-    o.status = status
+    o.status = OrderStatus.FILLED if status == "filled" else getattr(
+        OrderStatus, status.upper(), OrderStatus.CANCELED)
     o.filled_at = datetime(2026, 5, 22, 11, 30, tzinfo=timezone.utc)
     return o
 
