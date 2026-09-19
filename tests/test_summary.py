@@ -64,6 +64,24 @@ def test_empty_section_says_so():
     assert "No open positions." in _section()
 
 
+def test_each_position_is_its_own_block():
+    """Three-line position blocks run together as a wall of text without this."""
+    out = _section(positions=[_position("AAA", 1, 100, 101, 1.0, 1.0),
+                              _position("BBB", 1, 100, 101, 1.0, 1.0)])
+    assert "(`+1.0%`)\n\n`BBB`" in out
+
+
+def test_exit_flags_and_activity_stats_are_separated_groups():
+    """The footer is three distinct ideas — nearest exits, today, then the index."""
+    out = _section(positions=[_position("AAA", 1, 100, 100, 0.0, 0.0),
+                              _position("BBB", 1, 100, 103, 3.0, 3.0)],
+                   levels={"AAA": {"stop_price": 99.0, "take_price": 101.0},
+                           "BBB": {"stop_price": 98.0, "take_price": 120.0}})
+    assert "\n\n  Closest to exit:" in out
+    assert "to stop\n\n  Buys today:" in out
+    assert "0L)`\n\n  🔄 `AAA`" in out
+
+
 def test_section_counts_open_positions_in_the_header():
     out = _section(positions=[_position("AAPL", 3, 100, 101, 3, 1)])
     assert "📈 *Stocks* — 1 open" in out

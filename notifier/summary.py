@@ -256,7 +256,9 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
     nearest_tp, nearest_stop = _exit_flags(gaps)
 
     if not positions:
-        lines.append("  No open positions.")
+        lines += ["  No open positions.", ""]
+    # Each position is a three-line block. Without a blank line between them the
+    # section reads as one wall of text and the symbol boundaries disappear.
     for pos in positions:
         sym      = _symbol_of(pos, crypto)
         unpl     = float(pos.unrealized_pl)
@@ -280,6 +282,7 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
             f"  Today `{_fmt_money(float(pos.unrealized_intraday_pl))}` "
             f"(`{float(pos.unrealized_intraday_plpc) * 100:+.1f}%`){marks_str}"
         )
+        lines.append("")
 
     if nearest_tp or nearest_stop:
         closest = []
@@ -287,13 +290,14 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
             closest.append(f"🎯 `{nearest_tp}` `+{abs(gaps[nearest_tp][0]):.1f}%` to target")
         if nearest_stop:
             closest.append(f"⚠️ `{nearest_stop}` `-{abs(gaps[nearest_stop][1]):.1f}%` to stop")
-        lines.append("  Closest to exit: " + "  ".join(closest))
+        lines += ["  Closest to exit: " + "  ".join(closest), ""]
 
     lines += [
         f"  Buys today:    `{len(buys_today)} — {', '.join(buys_today) or 'none'}`",
         f"  Sells today:   `{len(sells)} — {', '.join(sells) or 'none'}`",
         f"  Realized P&L:  {_pnl_icon(realized)} `{_fmt_money(realized)}`",
         f"  Win rate:      `{win_rate}%  ({wins}W / {losses}L)`",
+        "",
     ]
 
     shown = set()
