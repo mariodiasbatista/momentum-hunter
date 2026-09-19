@@ -285,12 +285,12 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
         lines.append("")
 
     if nearest_tp or nearest_stop:
-        closest = []
+        lines.append("  Closest to exit:")
         if nearest_tp:
-            closest.append(f"🎯 `{nearest_tp}` `+{abs(gaps[nearest_tp][0]):.1f}%` to target")
+            lines.append(f"    🎯 `{nearest_tp}` `+{abs(gaps[nearest_tp][0]):.1f}%` to target")
         if nearest_stop:
-            closest.append(f"⚠️ `{nearest_stop}` `-{abs(gaps[nearest_stop][1]):.1f}%` to stop")
-        lines += ["  Closest to exit: " + "  ".join(closest), ""]
+            lines.append(f"    ⚠️ `{nearest_stop}` `-{abs(gaps[nearest_stop][1]):.1f}%` to stop")
+        lines.append("")
 
     lines += [
         f"  Buys today:    `{len(buys_today)} — {', '.join(buys_today) or 'none'}`",

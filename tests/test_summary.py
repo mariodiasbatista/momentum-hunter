@@ -80,6 +80,9 @@ def test_exit_flags_and_activity_stats_are_separated_groups():
     assert "\n\n  Closest to exit:" in out
     assert "to stop\n\n  Buys today:" in out
     assert "0L)`\n\n  🔄 `AAA`" in out
+    # label and each flag on their own line, not run together on one
+    assert "  Closest to exit:\n    🎯 `AAA`" in out
+    assert "to target\n    ⚠️ `BBB`" in out
 
 
 def test_section_counts_open_positions_in_the_header():
