@@ -925,24 +925,111 @@ class TestClosePositionWithRetry:
         close_position_with_retry(mock_client, "AAPL")
         mock_client.close_position.assert_called_once_with("AAPL")
 
-    def test_retries_once_on_insufficient_qty(self):
+    def test_waits_for_oco_sibling_to_release_shares(self):
+        """Cancelling one bracket leg cancels its held sibling asynchronously; the
+        close must not fire while the sibling still reserves the shares."""
         mock_client = MagicMock()
         mock_client.get_orders.return_value = []
-        mock_client.close_position.side_effect = [
-            Exception("insufficient qty available"), None
+        mock_client.get_open_position.side_effect = [
+            MagicMock(qty_available="0"),
+            MagicMock(qty_available="0"),
+            MagicMock(qty_available="273"),
         ]
-        with patch("time.sleep"):
+        with patch("trader._utils.time.sleep") as sleep:
+            from trader._utils import close_position_with_retry
+            close_position_with_retry(mock_client, "PLX")
+        assert mock_client.get_open_position.call_count == 3
+        assert sleep.call_count == 2
+        mock_client.close_position.assert_called_once_with("PLX")
+
+    def test_gives_up_waiting_after_timeout_but_still_attempts_close(self, caplog):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.get_open_position.return_value = MagicMock(qty_available="0")
+        with patch("trader._utils.time.sleep"), \
+             patch("trader._utils._RELEASE_TIMEOUT", 0.0):
+            with caplog.at_level(logging.WARNING, logger="trader.utils"):
+                from trader._utils import close_position_with_retry
+                close_position_with_retry(mock_client, "PLX")
+        assert any("still held" in r.message for r in caplog.records)
+        mock_client.close_position.assert_called_once_with("PLX")
+
+    def test_does_not_wait_when_position_unreadable(self):
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.get_open_position.side_effect = Exception("position does not exist")
+        with patch("trader._utils.time.sleep") as sleep:
             from trader._utils import close_position_with_retry
             close_position_with_retry(mock_client, "AAPL")
-        assert mock_client.close_position.call_count == 2
+        sleep.assert_not_called()
+        mock_client.close_position.assert_called_once_with("AAPL")
 
-    def test_raises_on_non_retryable_error(self):
+    def test_restores_stop_when_close_fails(self, tmp_path):
+        """cancel_open_orders has already torn down both protective legs by this
+        point — a failed close must not leave the position unprotected."""
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        orders_file = tmp_path / "orders_placed.json"
+        orders_file.write_text(json.dumps(
+            {"2026-09-15": {"PLX": {"qty": 273, "stop_price": 2.57}}}))
+
         mock_client = MagicMock()
         mock_client.get_orders.return_value = []
-        mock_client.close_position.side_effect = Exception("position not found")
-        from trader._utils import close_position_with_retry
-        with pytest.raises(Exception, match="position not found"):
-            close_position_with_retry(mock_client, "AAPL")
+        mock_client.get_open_position.return_value = MagicMock(
+            qty_available="273", qty="273", current_price="2.66")
+        mock_client.close_position.side_effect = Exception("insufficient qty available")
+
+        with patch("trader.order_placer._ORDERS_FILE", orders_file):
+            from trader._utils import close_position_with_retry
+            with pytest.raises(Exception, match="insufficient qty"):
+                close_position_with_retry(mock_client, "PLX")
+
+        req = mock_client.submit_order.call_args[0][0]
+        assert req.symbol == "PLX"
+        assert req.qty == 273
+        assert float(req.stop_price) == 2.57
+        assert req.side == OrderSide.SELL
+        assert req.time_in_force == TimeInForce.GTC
+
+    def test_reports_naked_position_when_stop_cannot_be_restored(self, tmp_path, caplog):
+        orders_file = tmp_path / "orders_placed.json"
+        orders_file.write_text(json.dumps({}))
+
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.get_open_position.return_value = MagicMock(qty_available="273")
+        mock_client.close_position.side_effect = Exception("rejected")
+
+        with patch("trader.order_placer._ORDERS_FILE", orders_file):
+            with caplog.at_level(logging.ERROR, logger="trader.utils"):
+                from trader._utils import close_position_with_retry
+                with pytest.raises(Exception, match="rejected"):
+                    close_position_with_retry(mock_client, "PLX")
+
+        assert any("naked" in r.message for r in caplog.records)
+        mock_client.submit_order.assert_not_called()
+
+    def test_does_not_restore_stop_above_market(self, tmp_path, caplog):
+        """A stop at or above the market is rejected by Alpaca — log the exposure
+        rather than firing an order that cannot rest."""
+        orders_file = tmp_path / "orders_placed.json"
+        orders_file.write_text(json.dumps(
+            {"2026-09-15": {"PLX": {"qty": 273, "stop_price": 2.93}}}))
+
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        mock_client.get_open_position.return_value = MagicMock(
+            qty_available="273", qty="273", current_price="2.66")
+        mock_client.close_position.side_effect = Exception("rejected")
+
+        with patch("trader.order_placer._ORDERS_FILE", orders_file):
+            with caplog.at_level(logging.ERROR, logger="trader.utils"):
+                from trader._utils import close_position_with_retry
+                with pytest.raises(Exception, match="rejected"):
+                    close_position_with_retry(mock_client, "PLX")
+
+        assert any("naked" in r.message for r in caplog.records)
+        mock_client.submit_order.assert_not_called()
 
     def test_cancels_bracket_legs_before_close(self):
         o = MagicMock()
