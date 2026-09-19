@@ -3,4 +3,11 @@
 __pycache__/
 *.pyc
 *.pyo
+.claude/
+
+# Runtime state, not source: ledgers, order book, feature flags, job timings.
+# data/ also holds the ingest modules, so ignore by extension rather than path.
 data/momentum.db
+data/momentum.db-shm
+data/momentum.db-wal
+data/*.json
