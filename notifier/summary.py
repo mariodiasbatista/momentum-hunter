@@ -107,9 +107,14 @@ def build_summary() -> str:
     except Exception:
         positions = []
 
-    from trader.order_placer import load_orders_today
+    from trader.order_placer import load_entry_for_symbol, load_orders_today
     orders_today = load_orders_today()
     buys_today = list(orders_today.keys())
+
+    # Levels have to come from the whole order history, not just today's: a
+    # position opened last week still has a stop and a target. load_entry_for_symbol
+    # also returns the stop as the trailing-stop job last raised it.
+    equity_levels = {p.symbol: load_entry_for_symbol(p.symbol) or {} for p in positions}
 
     # ── Build message ─────────────────────────────────────────────────────────
     lines = [f"📊 *Portfolio — {now_str}*\n"]
@@ -127,7 +132,7 @@ def build_summary() -> str:
 
     lines += _asset_section(
         "📈 *Stocks*", positions, today_trades, buys_today,
-        _equity_watchlist(), levels=orders_today, crypto=False,
+        _equity_watchlist(), levels=equity_levels, crypto=False,
     )
     lines += _crypto_section()
 
@@ -180,6 +185,60 @@ def _crypto_section() -> list[str]:
     return lines
 
 
+def _levels_of(rec: dict) -> tuple[float | None, float | None]:
+    """(stop, target) for a position record.
+
+    The two paths name the target differently — `take_price` for equities,
+    `tp_price` for crypto — because neither was written with this view in mind.
+    """
+    stop   = rec.get("stop_price")
+    target = rec.get("tp_price") or rec.get("take_price")
+    return (float(stop) if stop else None, float(target) if target else None)
+
+
+def _exit_gaps(positions: list, levels: dict, crypto: bool) -> dict[str, tuple]:
+    """How far each position sits from its exits, as a fraction of current price.
+
+    Returns {symbol: (pct_to_target, pct_to_stop)}, either of which may be None.
+    Measured against the live price rather than entry, so it answers "how much
+    further does this have to move", not "how much has it moved".
+    """
+    gaps = {}
+    for pos in positions:
+        sym = _symbol_of(pos, crypto)
+        price = float(pos.current_price or 0)
+        if not price:
+            continue
+        stop, target = _levels_of(levels.get(sym, {}))
+        gaps[sym] = (
+            (target - price) / price * 100 if target else None,
+            (price - stop) / price * 100 if stop else None,
+        )
+    return gaps
+
+
+def _nearest(gaps: dict[str, tuple], index: int, exclude: str | None = None) -> str | None:
+    """Symbol with the smallest remaining move to one exit, or None.
+
+    Negative gaps are kept: a position past its target with the order still
+    resting is the closest thing to an exit there is.
+    """
+    candidates = [(v[index], s) for s, v in gaps.items()
+                  if v[index] is not None and s != exclude]
+    return min(candidates)[1] if candidates else None
+
+
+def _exit_flags(gaps: dict[str, tuple]) -> tuple[str | None, str | None]:
+    """The one symbol closest to its target and a *different* one closest to its stop.
+
+    A tight position is often nearest on both counts, which reports one name twice
+    and hides whatever is genuinely closest to stopping out. The target wins the tie
+    and the stop falls to the runner-up, so the pair always names two risks.
+    """
+    nearest_tp = _nearest(gaps, 0)
+    return nearest_tp, _nearest(gaps, 1, exclude=nearest_tp)
+
+
 def _asset_section(title: str, positions: list, trades_today: list[dict],
                    buys_today: list[str], watchlist: list[str],
                    levels: dict, crypto: bool) -> list[str]:
@@ -193,22 +252,26 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
 
     lines = [f"\n{title} — {len(positions)} open"]
 
+    gaps = _exit_gaps(positions, levels, crypto)
+    nearest_tp, nearest_stop = _exit_flags(gaps)
+
     if not positions:
         lines.append("  No open positions.")
     for pos in positions:
         sym      = _symbol_of(pos, crypto)
         unpl     = float(pos.unrealized_pl)
         unpl_pct = float(pos.unrealized_plpc) * 100
-        rec      = levels.get(sym, {})
-        stop     = rec.get("stop_price")
-        target   = rec.get("tp_price")
+        stop, target = _levels_of(levels.get(sym, {}))
+        to_target, to_stop = gaps.get(sym, (None, None))
 
         marks = []
         if stop:
-            marks.append(f"Stop `{_fmt_price(stop, crypto)}`")
+            marks.append(f"Stop `{_fmt_price(stop, crypto)}` (`-{abs(to_stop):.1f}%`)"
+                         f"{' ⚠️' if sym == nearest_stop else ''}")
         if target:
-            marks.append(f"Target `{_fmt_price(target, crypto)}`")
-        marks_str = ("  " + "  ".join(marks)) if marks else ""
+            marks.append(f"Target `{_fmt_price(target, crypto)}` (`+{abs(to_target):.1f}%`)"
+                         f"{' 🎯' if sym == nearest_tp else ''}")
+        marks_str = ("\n  " + "  ".join(marks)) if marks else ""
 
         lines.append(
             f"`{sym}` {_fmt_qty(float(pos.qty), crypto)} @ "
@@ -217,6 +280,14 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
             f"  Today `{_fmt_money(float(pos.unrealized_intraday_pl))}` "
             f"(`{float(pos.unrealized_intraday_plpc) * 100:+.1f}%`){marks_str}"
         )
+
+    if nearest_tp or nearest_stop:
+        closest = []
+        if nearest_tp:
+            closest.append(f"🎯 `{nearest_tp}` `+{abs(gaps[nearest_tp][0]):.1f}%` to target")
+        if nearest_stop:
+            closest.append(f"⚠️ `{nearest_stop}` `-{abs(gaps[nearest_stop][1]):.1f}%` to stop")
+        lines.append("  Closest to exit: " + "  ".join(closest))
 
     lines += [
         f"  Buys today:    `{len(buys_today)} — {', '.join(buys_today) or 'none'}`",

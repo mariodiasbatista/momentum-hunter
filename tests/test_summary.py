@@ -88,6 +88,95 @@ def test_stop_and_target_levels_are_shown_when_known():
     assert "Target `$82,400.00`" in out
 
 
+def test_equity_target_is_read_from_take_price():
+    """The equity path records `take_price`, the crypto path `tp_price`."""
+    out = _section(
+        positions=[_position("AAPL", 3, 100, 101, 3.0, 1.0)],
+        levels={"AAPL": {"stop_price": 95.0, "take_price": 110.0}},
+    )
+    assert "Target `$110.00`" in out
+
+
+def test_gap_to_exit_is_measured_from_the_live_price():
+    """8.91% to target, not 10% — the position has already moved 1 of the 10."""
+    out = _section(
+        positions=[_position("AAPL", 3, 100, 101, 3.0, 1.0)],
+        levels={"AAPL": {"stop_price": 95.0, "take_price": 110.0}},
+    )
+    assert "Target `$110.00` (`+8.9%`)" in out
+    assert "Stop `$95.00` (`-5.9%`)" in out
+
+
+def test_flags_the_position_closest_to_each_exit():
+    positions = [_position("NEAR_TP", 1, 100, 109, 9.0, 9.0),
+                 _position("NEAR_SL", 1, 100, 96, -4.0, -4.0),
+                 _position("MIDDLE", 1, 100, 102, 2.0, 2.0)]
+    levels = {
+        "NEAR_TP": {"stop_price": 80.0,  "take_price": 110.0},   # +0.9% to target
+        "NEAR_SL": {"stop_price": 95.0,  "take_price": 130.0},   # -1.0% to stop
+        "MIDDLE":  {"stop_price": 90.0,  "take_price": 120.0},
+    }
+    out = _section(positions=positions, levels=levels)
+    assert "🎯 `NEAR_TP` `+0.9%` to target" in out
+    assert "⚠️ `NEAR_SL` `-1.0%` to stop" in out
+    # the markers land on the right position lines, not just the footer
+    assert "Target `$110.00` (`+0.9%`) 🎯" in out
+    assert "Stop `$95.00` (`-1.0%`) ⚠️" in out
+    assert "Target `$120.00` (`+17.6%`)\n" in out + "\n"
+
+
+def test_the_two_exit_flags_never_land_on_the_same_symbol():
+    """A tight position is nearest on both counts; naming it twice would hide
+    whatever is genuinely closest to stopping out."""
+    positions = [_position("TIGHT", 1, 100, 100, 0.0, 0.0),
+                 _position("RUNNER_UP", 1, 100, 103, 3.0, 3.0)]
+    levels = {
+        "TIGHT":     {"stop_price": 99.0, "take_price": 101.0},   # nearest to both
+        "RUNNER_UP": {"stop_price": 98.0, "take_price": 120.0},   # -4.9% to stop
+    }
+    out = _section(positions=positions, levels=levels)
+    assert "🎯 `TIGHT` `+1.0%` to target" in out
+    assert "⚠️ `RUNNER_UP` `-4.9%` to stop" in out
+    assert "`TIGHT` `-1.0%` to stop" not in out
+
+
+def test_a_lone_position_is_flagged_for_its_target_only():
+    """With no runner-up the stop flag is dropped rather than reusing the name —
+    one symbol cannot stand for two different warnings."""
+    out = _section(positions=[_position("ONLY", 1, 100, 100, 0.0, 0.0)],
+                   levels={"ONLY": {"stop_price": 95.0, "take_price": 110.0}})
+    assert "🎯 `ONLY` `+10.0%` to target" in out
+    assert "to stop" not in out
+
+
+def test_closest_to_exit_is_scoped_to_one_asset_class():
+    """Stocks and crypto each get their own pair of flags — _asset_section only
+    ever sees one class, so the crypto winner cannot mask the equity one."""
+    positions = [_position("BTCUSD", 0.003, 80_000, 81_000, 3.0, 1.25),
+                 _position("ETHUSD", 0.5, 4_000, 3_900, -50.0, -2.5)]
+    levels = {"BTC/USD": {"stop_price": 76_000.0, "tp_price": 82_400.0},
+              "ETH/USD": {"stop_price": 3_850.0, "tp_price": 4_400.0}}
+    out = _section(positions=positions, levels=levels, crypto=True)
+    assert "🎯 `BTC/USD`" in out
+    assert "⚠️ `ETH/USD`" in out
+
+
+def test_position_past_its_target_still_counts_as_closest():
+    """A resting target that has not filled yet is the nearest exit there is."""
+    out = _section(
+        positions=[_position("SPIKE", 1, 100, 115, 15.0, 15.0),
+                   _position("OTHER", 1, 100, 101, 1.0, 1.0)],
+        levels={"SPIKE": {"take_price": 110.0}, "OTHER": {"take_price": 111.0}},
+    )
+    assert "🎯 `SPIKE`" in out
+
+
+def test_no_exit_flags_without_recorded_levels():
+    out = _section(positions=[_position("AAPL", 3, 100, 101, 3.0, 1.0)])
+    assert "Closest to exit" not in out
+    assert "🎯" not in out
+
+
 def test_watchlist_omits_symbols_already_held_or_closed():
     out = _section(
         positions=[_position("AAPL", 1, 1, 1, 0, 0)],
