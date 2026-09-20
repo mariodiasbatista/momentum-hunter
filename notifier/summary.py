@@ -93,7 +93,8 @@ def build_summary() -> str:
     # The account block covers one broker account, so cumulative P&L spans both
     # paths even though everything below it is reported separately.
     from crypto.trader import load_trades as load_crypto_trades
-    all_trades = _load_trades(today_only=False) + load_crypto_trades()
+    equity_all = _load_trades(today_only=False)
+    all_trades = equity_all + load_crypto_trades()
 
     all_pnl    = sum(t.get("pnl") or 0 for t in all_trades)
     all_wins   = sum(1 for t in all_trades if (t.get("pnl") or 0) > 0)
@@ -133,6 +134,7 @@ def build_summary() -> str:
     lines += _asset_section(
         "📈 *Stocks*", positions, today_trades, buys_today,
         _equity_watchlist(), levels=equity_levels, crypto=False,
+        trades_all=equity_all,
     )
     lines += _crypto_section()
 
@@ -176,6 +178,7 @@ def _crypto_section() -> list[str]:
     lines = _asset_section(
         title, list(positions.values()), trades_today, buys_today,
         [c["symbol"] for c in watchlist.get("candidates", []) if c.get("eligible")],
+        trades_all=load_trades(),
         levels=state, crypto=True,
     )
 
@@ -241,14 +244,26 @@ def _exit_flags(gaps: dict[str, tuple]) -> tuple[str | None, str | None]:
 
 def _asset_section(title: str, positions: list, trades_today: list[dict],
                    buys_today: list[str], watchlist: list[str],
-                   levels: dict, crypto: bool) -> list[str]:
-    """One asset class: open positions, today's activity, per-symbol detail."""
+                   levels: dict, crypto: bool,
+                   trades_all: list[dict] | None = None) -> list[str]:
+    """One asset class: open positions, today's activity, per-symbol detail.
+
+    `trades_all` is this class's whole ledger. The account block's all-time record
+    merges both paths, so without it there is nowhere to read crypto's own.
+    """
     realized = sum(t.get("pnl") or 0 for t in trades_today)
     wins     = sum(1 for t in trades_today if (t.get("pnl") or 0) > 0)
     losses   = sum(1 for t in trades_today if (t.get("pnl") or 0) < 0)
     closed   = wins + losses
     win_rate = int(wins / closed * 100) if closed else 0
     sells    = [t["symbol"] for t in trades_today]
+
+    trades_all   = trades_all if trades_all is not None else trades_today
+    all_pnl      = sum(t.get("pnl") or 0 for t in trades_all)
+    all_wins     = sum(1 for t in trades_all if (t.get("pnl") or 0) > 0)
+    all_losses   = sum(1 for t in trades_all if (t.get("pnl") or 0) < 0)
+    all_closed   = all_wins + all_losses
+    all_win_rate = int(all_wins / all_closed * 100) if all_closed else 0
 
     lines = [f"\n{title} — {len(positions)} open"]
 
@@ -297,6 +312,8 @@ def _asset_section(title: str, positions: list, trades_today: list[dict],
         f"  Sells today:   `{len(sells)} — {', '.join(sells) or 'none'}`",
         f"  Realized P&L:  {_pnl_icon(realized)} `{_fmt_money(realized)}`",
         f"  Win rate:      `{win_rate}%  ({wins}W / {losses}L)`",
+        f"  All-time:      {_pnl_icon(all_pnl)} `{_fmt_money(all_pnl)}`  "
+        f"`{all_win_rate}%  ({all_wins}W / {all_losses}L)`",
         "",
     ]
 

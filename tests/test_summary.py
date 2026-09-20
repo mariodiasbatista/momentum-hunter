@@ -85,6 +85,21 @@ def test_exit_flags_and_activity_stats_are_separated_groups():
     assert "to target\n    ⚠️ `BBB`" in out
 
 
+def test_all_time_record_spans_the_whole_ledger_not_just_today():
+    """Today's win rate says nothing after a quiet day — the cumulative one does."""
+    out = _section(trades_today=[{"symbol": "AAA", "pnl": 5.0, "reason": "take profit"}],
+                   trades_all=[{"symbol": "AAA", "pnl": 5.0},
+                               {"symbol": "BBB", "pnl": -2.0},
+                               {"symbol": "CCC", "pnl": 3.0}])
+    assert "Win rate:      `100%  (1W / 0L)`" in out
+    assert "All-time:      🟢 `+$6.00`  `66%  (2W / 1L)`" in out
+
+
+def test_all_time_record_falls_back_to_today_when_no_ledger_given():
+    out = _section(trades_today=[{"symbol": "AAA", "pnl": -1.0, "reason": "stop hit"}])
+    assert "All-time:      🔴 `-$1.00`  `0%  (0W / 1L)`" in out
+
+
 def test_section_counts_open_positions_in_the_header():
     out = _section(positions=[_position("AAPL", 3, 100, 101, 3, 1)])
     assert "📈 *Stocks* — 1 open" in out
