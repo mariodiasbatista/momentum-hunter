@@ -119,8 +119,13 @@ CRYPTO_PAIRS = [
 
 # Capital is ring-fenced: crypto positions do not consume equity slots and the
 # crypto budget is CRYPTO_POSITION_SIZE_DOLLARS × CRYPTO_MAX_CONCURRENT.
-CRYPTO_POSITION_SIZE_DOLLARS = 250
-CRYPTO_MAX_CONCURRENT        = 5
+#
+# Sized up 2026-09-26 from 250×5 while holding that budget flat at ~$1.2k. The
+# first 9 trades never used more than 2 slots — 1.5 on average, 30% of the
+# ring-fence — so capacity was never the constraint and the idle two slots were
+# doing nothing. Fewer, larger positions put the same money to work.
+CRYPTO_POSITION_SIZE_DOLLARS = 400
+CRYPTO_MAX_CONCURRENT        = 3
 CRYPTO_ORDER_TOP_N           = 3
 
 # Alpaca reports only its own venue's crypto volume, not market-wide: BTC/USD
