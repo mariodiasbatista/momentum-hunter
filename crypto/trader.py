@@ -202,6 +202,43 @@ def resting_tp_orders(client) -> dict[str, object]:
             if o.asset_class == AssetClass.CRYPTO and o.order_type == OrderType.LIMIT}
 
 
+def pending_buy_symbols(client) -> set[str]:
+    """Slash-form symbols with a crypto BUY still working at the broker.
+
+    An entry that never fills leaves an order resting here but produces no
+    position, so a guard that looks only at positions would re-buy the symbol on
+    every cycle. Alpaca's paper venue does this on some newer listings.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import AssetClass, OrderSide, QueryOrderStatus
+
+    try:
+        orders = client.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, side=OrderSide.BUY, limit=200))
+    except Exception as exc:
+        log_api_error(log, "[crypto] Failed to list open buy orders", exc)
+        return set()
+
+    return {slash_symbol(o.symbol) for o in orders
+            if o.asset_class == AssetClass.CRYPTO}
+
+
+def _abandon_entry(client, symbol: str, order_id) -> None:
+    """Cancel an entry that did not fill, so it cannot fill later unwatched.
+
+    These are GTC market orders. Left alone they rest indefinitely and the next
+    cycle adds another, so the exposure grows by one position every cycle with
+    nothing tracking it. If the cancel races a late fill the position survives
+    untracked, which manage_exits still covers off the broker's own average
+    entry price.
+    """
+    try:
+        client.cancel_order_by_id(order_id)
+        log.warning("[crypto] ⚠️ %s did not fill — entry order cancelled", symbol)
+    except Exception as exc:
+        log_api_error(log, f"[crypto] Could not cancel unfilled entry on {symbol}", exc)
+
+
 def _cancel_tp_order(client, symbol: str, resting: dict) -> bool:
     """Release the quantity a resting target is holding so a market sell can run."""
     order = resting.get(symbol)
@@ -435,8 +472,8 @@ def _await_fill(client, order_id, timeout: float = 20.0):
 
     Crypto trades continuously so these fill in seconds. Waiting matters because
     the resting target is priced off the fill and cannot be placed until the
-    quantity exists; on timeout the caller falls back to the pre-trade quote and
-    the next cycle's ensure_tp_orders covers the position.
+    quantity exists. Returning None means no position was opened, so the caller
+    must abandon the entry rather than record one against the pre-trade quote.
     """
     import time
     from alpaca.trading.enums import OrderStatus
@@ -506,6 +543,7 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
         return []
 
     prices = latest_prices([c["symbol"] for c in candidates])
+    pending = pending_buy_symbols(client)
     placed = []
 
     for c in candidates:
@@ -517,6 +555,9 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
             break
         if symbol in positions:
             log.info("[crypto] Skip %s — already an open position", symbol)
+            continue
+        if symbol in pending:
+            log.warning("[crypto] Skip %s — a buy is still working at the broker", symbol)
             continue
 
         price = prices.get(symbol)
@@ -542,7 +583,11 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
         # resting target is an absolute limit price and has to sit off the price
         # we truly paid.
         filled = _await_fill(client, order.id)
-        entry_price = float(filled.filled_avg_price) if filled else price
+        if filled is None:
+            _abandon_entry(client, symbol, order.id)
+            continue
+
+        entry_price = float(filled.filled_avg_price)
         stop = min(entry_price - atr * 1.5, entry_price * (1 - config.CRYPTO_STOP_PCT))
         fee_rate = _measure_fee(client, symbol, filled)
 

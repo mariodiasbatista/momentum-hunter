@@ -270,7 +270,13 @@ class _FakeClient:
         from alpaca.trading.enums import QueryOrderStatus
         if filter is not None and filter.status == QueryOrderStatus.CLOSED:
             return self._closed_orders
-        return self._open_orders
+        # Alpaca filters by side server-side. Without this a resting take-profit
+        # sell answers a query for working buys, and the guard against
+        # duplicate entries would look correct while matching the wrong orders.
+        side = getattr(filter, "side", None)
+        if side is None:
+            return self._open_orders
+        return [o for o in self._open_orders if getattr(o, "side", None) == side]
 
     def cancel_order_by_id(self, order_id):
         self.cancelled.append(order_id)
@@ -284,13 +290,28 @@ def _fake_order(symbol="BTCUSD", order_id="tp-1", order_type=None,
                 status=None, filled_avg_price=None, filled_qty="2.5"):
     """Uses the real SDK enums — str(OrderStatus.FILLED) is 'OrderStatus.FILLED',
     so a fake built from plain strings would not catch comparison bugs."""
-    from alpaca.trading.enums import AssetClass, OrderStatus, OrderType
+    from alpaca.trading.enums import AssetClass, OrderSide, OrderStatus, OrderType
     return SimpleNamespace(
-        id=order_id, symbol=symbol,
+        id=order_id, symbol=symbol, side=OrderSide.SELL,
         order_type=order_type or OrderType.LIMIT,
         status=status or OrderStatus.FILLED,
         asset_class=AssetClass.CRYPTO, filled_avg_price=filled_avg_price,
         filled_qty=filled_qty, filled_at="2026-09-18T12:00:00+00:00")
+
+
+def _fills_at(monkeypatch, client, price, filled_qty="1.0"):
+    """Make this client's buys actually fill.
+
+    place_entries abandons an entry that does not fill, so a fake whose order
+    never reaches FILLED exercises the failure path rather than whatever the
+    calling test is about.
+    """
+    from alpaca.trading.enums import OrderStatus
+
+    monkeypatch.setattr(client, "get_order_by_id", lambda order_id: SimpleNamespace(
+        id=order_id, status=OrderStatus.FILLED,
+        filled_avg_price=str(price), filled_qty=filled_qty))
+    return client
 
 
 @pytest.fixture
@@ -461,7 +482,7 @@ def test_poll_sell_is_not_rebooked_by_record_tp_fills(monkeypatch, state_file, t
 
 
 def test_entry_is_notional_so_crypto_is_never_whole_unit_sized(monkeypatch, state_file):
-    client = _FakeClient([])
+    client = _fills_at(monkeypatch, _FakeClient([]), 76_000.0)
     monkeypatch.setattr(trader, "_client", lambda: client)
     monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 76_000.0})
 
@@ -484,9 +505,49 @@ def test_entries_respect_the_crypto_position_cap(monkeypatch, state_file):
     assert client.orders == []
 
 
+def test_an_entry_that_never_fills_is_cancelled_and_not_recorded(monkeypatch, state_file):
+    """Alpaca's paper venue leaves some listings resting at NEW indefinitely.
+
+    Recording one anyway put a position in the state file, the ledger and the
+    Telegram notification that the account did not hold, and left a GTC market
+    buy able to fill later with nothing watching it.
+    """
+    client = _FakeClient([])
+    monkeypatch.setattr(trader, "_client", lambda: client)
+    monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
+    monkeypatch.setattr(trader, "_await_fill", lambda c, oid, **kw: None)
+
+    placed = trader.place_entries([{"symbol": "BTC/USD", "score": 7,
+                                    "momentum": {"atr": 1.0}}], bars={})
+
+    assert placed == []
+    assert trader._load_state() == {}
+    assert client.cancelled == ["fake-order-1"]
+
+
+def test_a_working_buy_blocks_a_second_order_for_the_same_symbol(monkeypatch, state_file):
+    """The cap counts filled positions, so an unfilled buy is invisible to it.
+
+    Four $400 buys stacked up on one symbol this way, against a $1,200 budget.
+    """
+    from alpaca.trading.enums import AssetClass, OrderSide, OrderType
+
+    working = SimpleNamespace(id="buy-1", symbol="BTCUSD", side=OrderSide.BUY,
+                              order_type=OrderType.MARKET, asset_class=AssetClass.CRYPTO)
+    client = _FakeClient([], open_orders=[working])
+    monkeypatch.setattr(trader, "_client", lambda: client)
+    monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
+
+    placed = trader.place_entries([{"symbol": "BTC/USD", "score": 7,
+                                    "momentum": {"atr": 1.0}}], bars={})
+
+    assert placed == []
+    assert client.orders == []
+
+
 def test_entry_stop_is_at_least_the_floor_percentage(monkeypatch, state_file):
     """A tiny ATR must not produce a stop closer than CRYPTO_STOP_PCT."""
-    client = _FakeClient([])
+    client = _fills_at(monkeypatch, _FakeClient([]), 100.0)
     monkeypatch.setattr(trader, "_client", lambda: client)
     monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
 
@@ -674,8 +735,12 @@ def test_entry_records_the_fee_rate_the_buy_actually_paid(monkeypatch, state_fil
 
 
 def test_unreadable_fill_falls_back_to_the_configured_rate(monkeypatch, state_file):
-    """A fee measurement is not worth failing an entry that is already open."""
-    client = _FakeClient([])
+    """A fee measurement is not worth failing an entry that is already open.
+
+    The buy fills, but the position it created cannot be read back, so the gap
+    that reveals the tier is unavailable.
+    """
+    client = _fills_at(monkeypatch, _FakeClient([]), 100.0)
     monkeypatch.setattr(trader, "_client", lambda: client)
     monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
 
