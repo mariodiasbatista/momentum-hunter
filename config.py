@@ -137,7 +137,15 @@ CRYPTO_MIN_DOLLAR_VOLUME = 5_000
 # them alongside /USD would multiply exposure to one coin. Stablecoins score
 # highly on nothing and trade flat by design.
 CRYPTO_QUOTE          = "/USD"
-CRYPTO_EXCLUDE_SYMBOLS = {"USDC/USD", "USDT/USD", "USDG/USD", "USDT/USDC", "DAI/USD"}
+#
+# HYPE/USD is excluded for a different reason: Alpaca's paper venue accepts the
+# order, acknowledges it, and never matches it. Proven symbol-specific on
+# 2026-09-29 — the asset reports tradable with a deep quoted book, and a $400
+# BTC/USD buy filled in a second, so it is neither the size nor the account.
+# Left in, it passes the entry filters, stalls every cycle for the 20s fill
+# timeout and warns twice. Worth retrying if Alpaca's paper coverage improves.
+CRYPTO_EXCLUDE_SYMBOLS = {"USDC/USD", "USDT/USD", "USDG/USD", "USDT/USDC", "DAI/USD",
+                          "HYPE/USD"}
 
 # Fallback only. Alpaca's crypto fee is maker/taker on 30-day volume tiers, and the
 # real rate is measured from every buy's quantity gap (see crypto/fees.py) — this is
