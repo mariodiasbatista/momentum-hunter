@@ -47,6 +47,17 @@ ROC_PERIOD       = 20    # rate-of-change lookback days
 ROC_MIN_PCT      = 5.0   # close must be up ≥5% over ROC_PERIOD (price acceleration)
 GAP_THRESHOLD_PCT = 0.04 # skip entry if current price gaps >4% above prior close
 
+# ── Position coefficient (shared by both asset classes) ────────────────────
+# Multiplies every position this system sizes — equity share counts and crypto
+# notionals alike. 1 is a no-op and reproduces the sizes below exactly; 10 buys
+# ten times as much of each name. It scales entries only: stops, targets and
+# every exit rule are percentages of the fill and are unaffected, so the whole
+# position is still sold as one unit at the same levels.
+#
+# This is the only sizing knob meant to be turned day to day. The per-class
+# dollar amounts below are the strategy's unit size and should stay put.
+POSITION_COEFFICIENT = 1
+
 # ── Execution rules ────────────────────────────────────────────────────────
 # Base dollar amount per 1 position
 POSITION_SIZE_DOLLARS = 250
@@ -118,7 +129,8 @@ CRYPTO_PAIRS = [
 # See crypto/trader.py for why the two cannot share an order function.
 
 # Capital is ring-fenced: crypto positions do not consume equity slots and the
-# crypto budget is CRYPTO_POSITION_SIZE_DOLLARS × CRYPTO_MAX_CONCURRENT.
+# crypto budget is CRYPTO_POSITION_SIZE_DOLLARS × CRYPTO_MAX_CONCURRENT, times
+# POSITION_COEFFICIENT.
 #
 # Sized up 2026-09-26 from 250×5 while holding that budget flat at ~$1.2k. The
 # first 9 trades never used more than 2 slots — 1.5 on average, 30% of the

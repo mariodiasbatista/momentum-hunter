@@ -494,6 +494,25 @@ def test_entry_is_notional_so_crypto_is_never_whole_unit_sized(monkeypatch, stat
     assert getattr(client.orders[0], "qty", None) is None
 
 
+def test_position_coefficient_scales_the_notional(monkeypatch, state_file):
+    """The coefficient is the day-to-day sizing knob and must reach crypto too.
+
+    Exits are percentages of the fill, so scaling the notional must leave the
+    stop and the target where they would have been at any other size.
+    """
+    monkeypatch.setattr(config, "POSITION_COEFFICIENT", 10)
+    client = _fills_at(monkeypatch, _FakeClient([]), 100.0)
+    monkeypatch.setattr(trader, "_client", lambda: client)
+    monkeypatch.setattr(trader, "latest_prices", lambda pairs: {"BTC/USD": 100.0})
+
+    placed = trader.place_entries([{"symbol": "BTC/USD", "score": 7,
+                                    "momentum": {"atr": 1.0}}], bars={})
+
+    assert client.orders[0].notional == config.CRYPTO_POSITION_SIZE_DOLLARS * 10
+    assert placed[0]["notional"] == config.CRYPTO_POSITION_SIZE_DOLLARS * 10
+    assert placed[0]["stop_price"] == 100.0 * (1 - config.CRYPTO_STOP_PCT)
+
+
 def test_entries_respect_the_crypto_position_cap(monkeypatch, state_file):
     full = [_FakePosition(f"C{i}USD", "1", 1.0) for i in range(config.CRYPTO_MAX_CONCURRENT)]
     client = _FakeClient(full)

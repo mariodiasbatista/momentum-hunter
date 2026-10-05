@@ -47,16 +47,20 @@ def _get_spy_open_return() -> float | None:
 
 # ── Position sizing ──────────────────────────────────────────────────────────
 
+def position_units(price: float) -> int:
+    return config.POSITION_MULTIPLIER if price < config.POSITION_PRICE_THRESHOLD else 1
+
+
+def position_dollars(price: float) -> float:
+    return position_units(price) * config.POSITION_SIZE_DOLLARS * config.POSITION_COEFFICIENT
+
+
 def position_qty(price: float) -> int:
-    multiplier = config.POSITION_MULTIPLIER if price < config.POSITION_PRICE_THRESHOLD else 1
-    dollars = multiplier * config.POSITION_SIZE_DOLLARS
-    return max(1, int(dollars / price))
+    return max(1, int(position_dollars(price) / price))
 
 
 def position_label(price: float) -> str:
-    if price < config.POSITION_PRICE_THRESHOLD:
-        return f"3 pos · ${config.POSITION_SIZE_DOLLARS * config.POSITION_MULTIPLIER}"
-    return f"1 pos · ${config.POSITION_SIZE_DOLLARS}"
+    return f"{position_units(price)} pos · ${position_dollars(price):,.0f}"
 
 
 # ── Alpaca client ────────────────────────────────────────────────────────────

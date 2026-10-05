@@ -526,7 +526,7 @@ def _measure_fee(client, symbol: str, filled) -> float:
 
 
 def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
-    """Buy up to CRYPTO_ORDER_TOP_N candidates at CRYPTO_POSITION_SIZE_DOLLARS each."""
+    """Buy up to CRYPTO_ORDER_TOP_N candidates, each sized by POSITION_COEFFICIENT."""
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
@@ -544,6 +544,7 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
 
     prices = latest_prices([c["symbol"] for c in candidates])
     pending = pending_buy_symbols(client)
+    notional = config.CRYPTO_POSITION_SIZE_DOLLARS * config.POSITION_COEFFICIENT
     placed = []
 
     for c in candidates:
@@ -571,7 +572,7 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
         try:
             order = client.submit_order(MarketOrderRequest(
                 symbol=symbol,
-                notional=config.CRYPTO_POSITION_SIZE_DOLLARS,
+                notional=notional,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.GTC,
             ))
@@ -593,12 +594,12 @@ def place_entries(candidates: list[dict], bars: dict) -> list[dict]:
 
         _record_entry(symbol, entry_price, stop, tp_pct, tp_kind, fee_rate)
         log.info("[crypto] ✅ %s $%d @ $%.4f | stop $%.4f | tp +%.1f%% (%s) | score %d",
-                 symbol, config.CRYPTO_POSITION_SIZE_DOLLARS, entry_price, stop,
+                 symbol, notional, entry_price, stop,
                  tp_pct * 100, tp_kind, c["score"])
         placed.append({
             "symbol": symbol, "price": entry_price, "stop_price": stop,
             "tp_pct": tp_pct, "tp_kind": tp_kind, "score": c["score"],
-            "notional": config.CRYPTO_POSITION_SIZE_DOLLARS,
+            "notional": notional,
         })
 
     return placed

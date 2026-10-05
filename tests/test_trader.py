@@ -166,6 +166,41 @@ class TestPositionSizing:
         assert "$750" in label
 
 
+class TestPositionCoefficient:
+    """The one knob meant to be turned day to day, so 1 must be a strict no-op."""
+
+    def test_coefficient_of_one_changes_nothing(self, monkeypatch):
+        import config
+        from trader.order_placer import position_qty, position_label
+        monkeypatch.setattr(config, "POSITION_COEFFICIENT", 1)
+        assert position_qty(200.0) == 1
+        assert position_qty(5.0) == 150
+        assert position_label(100.0) == "1 pos · $250"
+        assert position_label(10.0) == "3 pos · $750"
+
+    def test_coefficient_scales_share_count_and_label(self, monkeypatch):
+        import config
+        from trader.order_placer import position_qty, position_label
+        monkeypatch.setattr(config, "POSITION_COEFFICIENT", 10)
+        assert position_qty(200.0) == 12      # floor(2500/200)
+        assert position_qty(5.0) == 1500      # 3 × 2500 / 5
+        assert "$2,500" in position_label(100.0)
+        assert "$7,500" in position_label(10.0)
+
+    def test_coefficient_rescues_the_single_share_floor(self, monkeypatch):
+        """At coefficient 1 a $500 stock buys one $500 share against a $250 budget.
+
+        The floor is a 100% overshoot there; the coefficient is the only thing
+        that makes the requested dollar amount reachable on expensive names.
+        """
+        import config
+        from trader.order_placer import position_qty
+        monkeypatch.setattr(config, "POSITION_COEFFICIENT", 1)
+        assert position_qty(500.0) == 1
+        monkeypatch.setattr(config, "POSITION_COEFFICIENT", 10)
+        assert position_qty(500.0) == 5
+
+
 # ── place_orders ─────────────────────────────────────────────────────────────
 
 class TestCooldown:
