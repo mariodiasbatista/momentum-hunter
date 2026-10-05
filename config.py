@@ -56,7 +56,12 @@ GAP_THRESHOLD_PCT = 0.04 # skip entry if current price gaps >4% above prior clos
 #
 # This is the only sizing knob meant to be turned day to day. The per-class
 # dollar amounts below are the strategy's unit size and should stay put.
-POSITION_COEFFICIENT = 1
+#
+# Set to 10 on 2026-10-05: the percentage edge looked real but the dollar
+# amounts were too small to read (a 2.59% XRP win booked $10.14). Paper fills at
+# the quote regardless of size, so this is not evidence that 10× executes — at
+# this level a crypto order is ~60% of a day's volume on the thinner pairs here.
+POSITION_COEFFICIENT = 10
 
 # ── Execution rules ────────────────────────────────────────────────────────
 # Base dollar amount per 1 position

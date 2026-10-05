@@ -130,6 +130,17 @@ def _signal(symbol="AAPL", exit_mode="trailing_stop", rsi=60.0, warning_count=0)
 # ── position_qty & position_label ────────────────────────────────────────────
 
 class TestPositionSizing:
+    """Base sizing rules: the $50 threshold, the 3× multiplier and the 1-share floor.
+
+    Pinned to coefficient 1 because these assert the rules, not the live stake —
+    otherwise every one of them has to be rewritten each time the knob moves.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _unit_stake(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "POSITION_COEFFICIENT", 1)
+
     def test_high_price_gives_one_position(self):
         from trader.order_placer import position_qty
         # $250 / $200 = 1 share

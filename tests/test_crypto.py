@@ -490,7 +490,8 @@ def test_entry_is_notional_so_crypto_is_never_whole_unit_sized(monkeypatch, stat
     placed = trader.place_entries([candidate], bars={})
 
     assert len(placed) == 1
-    assert client.orders[0].notional == config.CRYPTO_POSITION_SIZE_DOLLARS
+    assert client.orders[0].notional == (config.CRYPTO_POSITION_SIZE_DOLLARS
+                                         * config.POSITION_COEFFICIENT)
     assert getattr(client.orders[0], "qty", None) is None
 
 
