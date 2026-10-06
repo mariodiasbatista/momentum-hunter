@@ -1244,3 +1244,53 @@ class TestIntradayMaxHold:
         # No entry date in orders file → max-hold check skipped, RSI check proceeds
         closed, client = self._run_with_entry_date(None, rsi_values=[55.0])
         assert len(closed) == 0  # RSI=55 < 65, no other exit → holds
+
+
+# ── stop_updater failure isolation ───────────────────────────────────────────
+
+class TestStopUpdateIsolation:
+    """A delisted holding (QRVO, 2026-10-06) ended the whole stop run.
+
+    Alpaca cancels the bracket legs when an asset goes inactive, so the updater
+    saw no stop, tried to place one, and got a 422 from an unguarded call. Every
+    position the loop had not reached yet kept a stale stop for the day.
+    """
+
+    def _run(self, monkeypatch, failing: str):
+        from types import SimpleNamespace
+        from trader import stop_updater as su
+
+        positions = [SimpleNamespace(symbol="QRVO", qty="2", current_price="114.17"),
+                     SimpleNamespace(symbol="RGEN", qty="1", current_price="193.12")]
+        entries = {"QRVO": {"entry_price": 114.88, "stop_price": 108.49},
+                   "RGEN": {"entry_price": 180.67, "stop_price": 169.24}}
+        attempted = []
+
+        def fake_place(client, symbol, pos, stop_price, current_price):
+            attempted.append(symbol)
+            if symbol == failing:
+                raise Exception('{"code":40010001,"message":"asset QRVO is not active"}')
+
+        monkeypatch.setattr(su, "_get_client", lambda: object())
+        monkeypatch.setattr(su, "equity_positions", lambda c: positions)
+        monkeypatch.setattr(su, "_find_sell_orders", lambda c, s: (None, False))
+        monkeypatch.setattr(su, "_place_new_stop", fake_place)
+        monkeypatch.setattr("data.alpaca_client.fetch_latest_asks",
+                            lambda syms: {p.symbol: float(p.current_price) for p in positions})
+        monkeypatch.setattr("trader.order_placer.load_entry_for_symbol", entries.get)
+        monkeypatch.setattr("trader.order_placer.update_stop_in_record",
+                            lambda symbol, stop: None)
+
+        return su.update_trailing_stops(), attempted
+
+    def test_a_failed_stop_does_not_abort_later_positions(self, monkeypatch):
+        updated, attempted = self._run(monkeypatch, failing="QRVO")
+        assert attempted == ["QRVO", "RGEN"]
+        assert [u["symbol"] for u in updated] == ["RGEN"]
+
+    def test_the_inactive_asset_is_reported_as_unprotected(self, monkeypatch, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="trader.stops"):
+            self._run(monkeypatch, failing="QRVO")
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "QRVO" in msg and "no longer active" in msg

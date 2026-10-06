@@ -50,6 +50,38 @@ def _find_sell_orders(client, symbol: str) -> tuple:
     return None, False
 
 
+def _log_stop_failure(symbol: str, exc: Exception) -> None:
+    """Classify a failed stop placement, without re-raising.
+
+    A raise here ends the whole run, so every position the loop had not reached
+    yet silently keeps a stale stop. One delisted holding did exactly that.
+    """
+    exc_str = str(exc)
+    if "stop price must be less than current price" in exc_str or "42210000" in exc_str:
+        # Race: price dropped between the ask fetch and submission. Existing stop stands.
+        log.warning("[stops] %s — stop price above market (price moved since fetch), skipping: %s",
+                    symbol, exc)
+    elif "40310000" in exc_str:
+        # Shares already committed to a bracket's stop leg — the position is protected
+        # and detection just missed the held child order.
+        log.warning("[stops] %s — shares held by active bracket stop (already protected), skipping",
+                    symbol)
+    elif "40010001" in exc_str or "is not active" in exc_str:
+        log.warning("[stops] ⚠️ %s — asset is no longer active (delisted or halted). The broker "
+                    "cancels the bracket legs on these, so the position is unprotected and no "
+                    "stop or sell can be placed until the corporate action settles", symbol)
+    else:
+        log_api_error(log, f"[stops] ❌ Failed to update stop for {symbol}", exc)
+
+
+def _ensure_stop(client, symbol: str, pos, stop_price: float, current_price: float) -> None:
+    """Place a stop for a position that has none, containing failure to this symbol."""
+    try:
+        _place_new_stop(client, symbol, pos, stop_price, current_price)
+    except Exception as exc:
+        _log_stop_failure(symbol, exc)
+
+
 def update_trailing_stops() -> list[dict]:
     """
     Raise stop-loss orders for profitable positions. Returns list of update summaries.
@@ -110,14 +142,14 @@ def update_trailing_stops() -> list[dict]:
                       symbol, gain_pct * 100, config.STOP_TRAIL_MIN_GAIN_PCT * 100)
             # Still ensure a stop exists if none is active
             if not has_any_sell:
-                _place_new_stop(client, symbol, pos, current_stop or candidate_stop, current_price)
+                _ensure_stop(client, symbol, pos, current_stop or candidate_stop, current_price)
             continue
 
         if candidate_stop <= effective_current_stop:
             log.debug("[stops] %s — candidate stop $%.2f not above current $%.2f, no update",
                       symbol, candidate_stop, effective_current_stop)
             if not has_any_sell:
-                _place_new_stop(client, symbol, pos, effective_current_stop, current_price)
+                _ensure_stop(client, symbol, pos, effective_current_stop, current_price)
             continue
 
         # Update or place the stop
@@ -143,19 +175,7 @@ def update_trailing_stops() -> list[dict]:
                 "gain_pct":  round(gain_pct * 100, 1),
             })
         except Exception as exc:
-            exc_str = str(exc)
-            # Race condition: price dropped between ask-fetch and order submission.
-            # Downgrade to warning — the existing stop remains in place.
-            if "stop price must be less than current price" in exc_str or "42210000" in exc_str:
-                log.warning("[stops] %s — stop price above market (price moved since fetch), skipping: %s",
-                            symbol, exc)
-            elif "40310000" in exc_str:
-                # Shares already committed to bracket's stop-loss leg — position is protected.
-                # Detection missed the bracket child order; safe to skip.
-                log.warning("[stops] %s — shares held by active bracket stop (already protected), skipping",
-                            symbol)
-            else:
-                log_api_error(log, f"[stops] ❌ Failed to update stop for {symbol}", exc)
+            _log_stop_failure(symbol, exc)
 
     log.info("[stops] Done — %d/%d stop(s) updated", len(updated), len(positions))
     return updated
