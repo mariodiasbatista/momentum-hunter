@@ -12,7 +12,8 @@ Positions not found in today's signals are left untouched (logged as warning).
 import logging
 
 import config
-from trader._utils import close_position_with_retry, equity_positions, log_api_error
+from trader._utils import (asset_tradable, close_position_with_retry, equity_positions,
+                           log_api_error)
 
 log = logging.getLogger("trader.monitor")
 
@@ -78,6 +79,12 @@ def check_and_exit(signals: dict) -> list[dict]:
 
         if not reasons:
             log.debug("[monitor] %s — holding, no exit trigger", symbol)
+            continue
+
+        if not asset_tradable(client, symbol, log):
+            log.warning("[monitor] ⚠️ %s — exit triggered (%s) but asset is not tradable "
+                        "(halted or delisted), so it cannot be closed", symbol,
+                        " | ".join(reasons))
             continue
 
         reason_str = " | ".join(reasons)

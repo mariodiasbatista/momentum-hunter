@@ -20,7 +20,8 @@ from datetime import date
 import pandas_ta as ta
 
 import config
-from trader._utils import close_position_with_retry, equity_positions, log_api_error
+from trader._utils import (asset_tradable, close_position_with_retry, equity_positions,
+                           log_api_error)
 
 log = logging.getLogger("trader.intraday")
 
@@ -79,6 +80,13 @@ def run_intraday_check() -> list[dict]:
     for pos in positions:
         symbol = pos.symbol
         plpc = float(pos.unrealized_plpc or 0) * 100  # positive = gain, negative = loss
+
+        # Every action in this loop is a close, and none of them can reach a
+        # halted or delisted asset, so there is nothing to attempt.
+        if not asset_tradable(client, symbol, log):
+            log.warning("[intraday] ⚠️ %s — asset not tradable (halted or delisted), "
+                        "no exit can be executed", symbol)
+            continue
 
         # Max-hold exit — close positions held too long regardless of P&L
         entry_date_str = load_entry_date_for_symbol(symbol)

@@ -37,6 +37,21 @@ def equity_positions(client) -> list:
     return [p for p in client.get_all_positions() if p.asset_class != AssetClass.CRYPTO]
 
 
+def asset_tradable(client, symbol: str, log=None) -> bool:
+    """False only when the broker positively reports the asset as untradable.
+
+    Delisting and trading halts both land here. An unreadable answer counts as
+    tradable: refusing to act on a transient API error would leave a position
+    unprotected for the rest of the session, which is the worse failure.
+    """
+    try:
+        return bool(client.get_asset(symbol).tradable)
+    except Exception as exc:
+        (log or _log).warning("[utils] %s — could not read asset status, assuming "
+                              "tradable: %s", symbol, exc)
+        return True
+
+
 def cancel_open_orders(client, symbol: str, log=None) -> int:
     """Cancel all open orders for symbol so shares are free to close.
 
@@ -147,6 +162,15 @@ def close_position_with_retry(client, symbol: str, log=None) -> None:
     first, so the caller never turns a protected position into a naked one.
     """
     _l = log or _log
+
+    # Checked before anything is cancelled. On a halted or delisted asset the
+    # close is refused by the broker and so is restore_stop, so proceeding would
+    # tear down both bracket legs and be unable to rebuild them — this function
+    # would be the thing that left the position naked.
+    if not asset_tradable(client, symbol, _l):
+        raise RuntimeError(f"{symbol} is not tradable (halted or delisted) — close not "
+                           "attempted, protective orders left intact")
+
     cancel_open_orders(client, symbol, _l)
     _await_qty_release(client, symbol, _l)
     try:

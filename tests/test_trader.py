@@ -1294,3 +1294,86 @@ class TestStopUpdateIsolation:
             self._run(monkeypatch, failing="QRVO")
         msg = "\n".join(r.getMessage() for r in caplog.records)
         assert "QRVO" in msg and "no longer active" in msg
+
+
+# ── untradable assets (halted / delisted) ────────────────────────────────────
+
+class TestUntradableAssets:
+    """Halts and delistings are real-market states, not paper artefacts.
+
+    The hazard is self-inflicted: close_position_with_retry tears down both
+    bracket legs before selling, and on an untradable asset neither the sell nor
+    the stop restore can succeed — so attempting it is what strips the position
+    of protection.
+    """
+
+    def _client(self, tradable: bool):
+        from types import SimpleNamespace
+        calls = []
+
+        class C:
+            def get_asset(self, symbol):
+                calls.append(("get_asset", symbol))
+                return SimpleNamespace(tradable=tradable)
+
+            def get_orders(self, *a, **k):
+                calls.append(("get_orders", None))
+                return []
+
+            def cancel_order_by_id(self, oid):
+                calls.append(("cancel", oid))
+
+            def get_open_position(self, symbol):
+                return SimpleNamespace(qty="2", qty_available="2", current_price="114.17")
+
+            def close_position(self, symbol):
+                calls.append(("close", symbol))
+
+            def submit_order(self, req):
+                calls.append(("submit_order", getattr(req, "symbol", None)))
+
+        return C(), calls
+
+    def test_an_untradable_asset_is_not_torn_down(self):
+        from trader._utils import close_position_with_retry
+        client, calls = self._client(tradable=False)
+
+        with pytest.raises(RuntimeError, match="not tradable"):
+            close_position_with_retry(client, "QRVO")
+
+        assert [c[0] for c in calls] == ["get_asset"]
+
+    def test_a_tradable_asset_still_closes(self):
+        from trader._utils import close_position_with_retry
+        client, calls = self._client(tradable=True)
+        close_position_with_retry(client, "RGEN")
+        assert ("close", "RGEN") in calls
+
+    def test_an_unreadable_asset_status_does_not_block_the_close(self):
+        from trader._utils import asset_tradable
+
+        class Broken:
+            def get_asset(self, symbol):
+                raise Exception("503 service unavailable")
+
+        # Fail-open: a transient read error must not strand a protectable position.
+        assert asset_tradable(Broken(), "RGEN") is True
+
+    def test_the_stop_updater_skips_and_raises_an_alert(self, monkeypatch):
+        from types import SimpleNamespace
+        from trader import stop_updater as su
+
+        positions = [SimpleNamespace(symbol="QRVO", qty="2", current_price="114.17")]
+        alerts = []
+
+        monkeypatch.setattr(su, "_get_client", lambda: object())
+        monkeypatch.setattr(su, "equity_positions", lambda c: positions)
+        monkeypatch.setattr(su, "asset_tradable", lambda c, s, log=None: False)
+        monkeypatch.setattr(su, "_place_new_stop", lambda *a: pytest.fail("placed a stop"))
+        monkeypatch.setattr("data.alpaca_client.fetch_latest_asks", lambda s: {"QRVO": 114.17})
+        monkeypatch.setattr("trader.order_placer.load_entry_for_symbol",
+                            lambda s: {"entry_price": 114.88, "stop_price": 108.49})
+        monkeypatch.setattr("notifier.telegram.send_alert", lambda m: alerts.append(m))
+
+        assert su.update_trailing_stops() == []
+        assert len(alerts) == 1 and "QRVO" in alerts[0]

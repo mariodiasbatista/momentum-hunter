@@ -11,7 +11,7 @@ Never lowers a stop.
 import logging
 
 import config
-from trader._utils import equity_positions, log_api_error
+from trader._utils import asset_tradable, equity_positions, log_api_error
 
 log = logging.getLogger("trader.stops")
 
@@ -106,12 +106,22 @@ def update_trailing_stops() -> list[dict]:
     symbols = [p.symbol for p in positions]
     asks = fetch_latest_asks(symbols)
     updated = []
+    unprotected = []
 
     for pos in positions:
         symbol = pos.symbol
         entry = load_entry_for_symbol(symbol)
         if not entry:
             log.debug("[stops] %s — no entry record, skipping", symbol)
+            continue
+
+        if not asset_tradable(client, symbol, log):
+            # Nothing can be placed on a halted or delisted asset, and the broker
+            # has already cancelled the bracket legs, so the position is exposed
+            # with no way to protect it. Reported rather than retried silently.
+            log.warning("[stops] ⚠️ %s — asset not tradable (halted or delisted), no stop "
+                        "possible. Position is unprotected until it resumes or settles", symbol)
+            unprotected.append(symbol)
             continue
 
         entry_price  = float(entry["entry_price"])
@@ -178,7 +188,22 @@ def update_trailing_stops() -> list[dict]:
             _log_stop_failure(symbol, exc)
 
     log.info("[stops] Done — %d/%d stop(s) updated", len(updated), len(positions))
+    if unprotected:
+        _notify_unprotected(unprotected)
     return updated
+
+
+def _notify_unprotected(symbols: list[str]) -> None:
+    """Alert on held positions that cannot carry a stop.
+
+    Skipping these quietly is what makes the skip dangerous with real money: the
+    exposure is uncapped and nothing else in the system will mention it.
+    """
+    from notifier.telegram import send_alert
+    names = ", ".join(f"`{s}`" for s in symbols)
+    send_alert(f"⚠️ No stop possible on {names} — halted or delisted, so the broker "
+               f"rejects every order. Position is unprotected until trading resumes "
+               f"or the corporate action settles.")
 
 
 def _place_new_stop(client, symbol: str, pos, stop_price: float, current_price: float) -> None:
